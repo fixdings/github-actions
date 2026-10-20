@@ -1,0 +1,12 @@
+{
+  "name": "github-actions",
+  "private": true,
+  "type": "module",
+  "description": "Reusable GitHub Actions workflows: Claude Code tag, review, review-fix and auto-merge",
+  "engines": {
+    "node": ">=24.12"
+  },
+  "scripts": {
+    "test": "node tests/all.mjs"
+  }
+}

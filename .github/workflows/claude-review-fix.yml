@@ -1,25 +1,12 @@
 name: Claude Review Fix
 run-name: Claude Review Fix · ${{ github.event.workflow_run.head_sha }}
 
-# Fixes the [blocking] findings of a review round, then lets the next round judge the fix — but
-# ONLY on a PR Claude opened itself (claude.yml's `gh pr create` from an issue): author
-# `claude[bot]`, head on a `claude/` branch. A person's PR is never touched here, even one Claude
-# committed to on request; its author answers its review. The loop ends on CLEAN, or when the
-# round reaches the budget (`CLAUDE_CODE_REVIEW_ROUND_BUDGET`, else 3 — the numbers are read from
-# the review's own `Round <n> of <budget> · VERDICT: …` line, so this file and the review can
-# never disagree), or on a fix round that commits nothing (no push, so no next round) — both
-# give the PR the `needs-human` label and one comment.
-#
-# `workflow_run` for the same reason as claude-auto-merge.yml: it always runs the DEFAULT
-# branch's copy of this file, so the PR under review cannot rewrite its own fixer. Unlike the
-# gate it does check out the PR head — it has to edit it — which the action's security doc warns
-# against for untrusted heads (docs/security.md, "Using this action with pull_request_target or
-# workflow_run"). Here the head is a same-repo `claude/` branch written by Claude for someone
-# with write access, and the round step proves both before the checkout happens.
-
+# Caller only: the fixer itself is fixdings/github-actions' reusable-claude-review-fix.yml.
+# `workflow_run` always runs the DEFAULT branch's copy of this file, so the PR under review
+# cannot rewrite its own fixer.
 on:
   workflow_run:
-    # Matched by NAME, which any workflow can claim — the job `if` pins the path as well.
+    # Matched by NAME, which any workflow can claim — the called job's `if` pins the path too.
     workflows: [Claude Auto Review with Tracking]
     types: [completed]
 
@@ -31,207 +18,12 @@ concurrency:
 
 jobs:
   fix:
-    # A failed review leaves no verdict to act on (the gate labels it `review-failed`); cancelled
-    # and skipped runs were superseded by a push. `pull_requests` lists only same-repo PRs, so a
-    # fork never reaches the checkout below.
-    if: >-
-      github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.path == '.github/workflows/claude-code-review.yml' &&
-      github.event.workflow_run.pull_requests[0] != null &&
-      startsWith(github.event.workflow_run.head_branch, 'claude/')
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    # github.token only (the round step's reads, the needs-human label and comment). It does NOT
-    # bound Claude: the action mints its own App token, and the commit goes through that.
+    # The ceiling for the called job, which can only narrow it.
     permissions:
       contents: read
       pull-requests: write
       issues: write
       id-token: write
-    steps:
-      - name: Read the review round
-        id: round
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          PR: ${{ github.event.workflow_run.pull_requests[0].number }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
-          RUN_STARTED_AT: ${{ github.event.workflow_run.run_started_at }}
-        run: |
-          # The author is the whole scope rule: a branch name is anyone-with-push's to choose,
-          # the PR's author is not. A moved head has its own review coming; a closed PR is done.
-          pr=$(gh api "repos/$GH_REPO/pulls/$PR" --jq '[.state, .head.sha, .user.login] | @tsv')
-          IFS=$'\t' read -r pr_state pr_head pr_author <<< "$pr"
-          if [ "$pr_author" != "claude[bot]" ]; then
-            echo "Skipped: PR #$PR was opened by $pr_author, not claude[bot], so its author answers the review."
-            exit 0
-          fi
-          if [ "$pr_state" != open ] || [ "$pr_head" != "$HEAD_SHA" ]; then
-            echo "Skipped: PR #$PR is $pr_state and its head moved=$([ "$pr_head" != "$HEAD_SHA" ] && echo yes || echo no)."
-            exit 0
-          fi
-
-          # The review run's tracking comment, selected exactly as claude-auto-merge.yml step 6
-          # selects it: the bot, the run link, nothing older than this attempt, the earliest such.
-          comments=$(gh api --paginate "repos/$GH_REPO/issues/$PR/comments?per_page=100&since=$RUN_STARTED_AT")
-          review=$(printf '%s' "$comments" | jq -cs --arg run "$RUN_ID" --arg since "$RUN_STARTED_AT" '
-            add // []
-            | map(select((.user.login // "") == "claude[bot]" or (.user.login // "") == "github-actions[bot]"))
-            | map(select((.body // "") | test("actions/runs/" + $run + "([^0-9]|$)")))
-            | map(select((.created_at // "") >= $since))
-            | sort_by(.id) | first // {} | {body: (.body // ""), url: (.html_url // "")}')
-          body=$(printf '%s' "$review" | jq -r .body)
-          url=$(printf '%s' "$review" | jq -r .url)
-
-          # The status line, outside code fences. `.+` stands in for the middle dot so the match
-          # does not depend on the runner locale reading UTF-8.
-          status=$(printf '%s\n' "$body" | awk '
-            { sub(/\r$/, ""); sub(/[[:space:]]+$/, "") }
-            /^[[:space:]]*```/ { fence = !fence; next }
-            !fence && /^Round [0-9]+ of [0-9]+ .+ VERDICT: (CLEAN|BLOCKING [1-9][0-9]*)$/ { print }')
-          if [ "$(printf '%s' "$status" | grep -c .)" -ne 1 ]; then
-            echo "::warning::Review run $RUN_ID left no single status line, so there is nothing to fix from. The gate reports the review itself."
-            exit 0
-          fi
-          read -r _ n _ budget _ _ verdict blocking <<< "$status"
-          if [ "$verdict" = CLEAN ]; then
-            echo "Round $n of $budget is CLEAN: nothing to fix."
-            exit 0
-          fi
-
-          if [ "$n" -ge "$budget" ]; then
-            f=$(mktemp)
-            printf '**Not fixed: budget spent — round %s of %s still has %s blocking finding(s).**\n\nThe fixer stops at the review budget (`CLAUDE_CODE_REVIEW_ROUND_BUDGET`, else 3). Last review: %s\n\n**What to do:** fix or decline the findings yourself and push, or merge as it stands.\n' \
-              "$n" "$budget" "$blocking" "$url" > "$f"
-            gh pr comment "$PR" --body-file "$f" || echo "::warning::Could not comment on PR #$PR."
-            if ! gh pr edit "$PR" --add-label needs-human; then
-              gh label create needs-human --color d93f0b --description "Waiting on a person — see the needs-human comment" || true
-              gh pr edit "$PR" --add-label needs-human || echo "::warning::Could not label PR #$PR."
-            fi
-            echo "Round $n of $budget: budget spent, handed to a person."
-            exit 0
-          fi
-
-          # The review body goes to Claude as a file, never through an expression: it quotes the
-          # diff, and an expression would paste it into the prompt unescaped.
-          printf '%s\n' "$body" > "$RUNNER_TEMP/review-round.md"
-          {
-            echo "fix=yes"
-            echo "n=$n"
-            echo "budget=$budget"
-            echo "blocking=$blocking"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Checkout the PR head
-        if: steps.round.outputs.fix == 'yes'
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-          fetch-depth: 0
-
-      - name: Fix the blocking findings
-        if: steps.round.outputs.fix == 'yes'
-        uses: anthropics/claude-code-action@v1
-        env:
-          # Agent mode commits to the branch this names (src/modes/agent/index.ts: "useful for
-          # auto-fix workflows"); without it the file_ops server would target the default branch.
-          CLAUDE_BRANCH: ${{ github.event.workflow_run.head_branch }}
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # The review this answers was started by claude[bot]'s own push from round 2 on, and
-          # agent mode refuses a bot actor not on this list (src/github/validation/actor.ts).
-          allowed_bots: "claude[bot]"
-          # Commits through mcp__github_file_ops__commit_files, signed by GitHub, with the App
-          # token — so the push starts the next review round, which a GITHUB_TOKEN push would not.
-          use_commit_signing: true
-          prompt: |
-            REPO: ${{ github.repository }}
-            PR NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
-            BRANCH: ${{ github.event.workflow_run.head_branch }}
-            HEAD SHA: ${{ github.event.workflow_run.head_sha }}
-            You opened this pull request. Review round ${{ steps.round.outputs.n }} of ${{ steps.round.outputs.budget }}
-            left ${{ steps.round.outputs.blocking }} [blocking] finding(s). The review comment is saved at
-            ${{ runner.temp }}/review-round.md — Read it first. Earlier rounds are in the PR conversation
-            (gh pr view <PR NUMBER> --comments) and the change is gh pr diff <PR NUMBER>.
-            Fix every [blocking] finding, in this one turn. A [non-blocking] one only when its fix is
-            small and certain. Change nothing the findings do not ask for. Follow this repository's
-            CLAUDE.md, its .claude/rules and the code around each change; run the test suite when the
-            repo has one. Two rules hold whatever the repo says: build a shell call as an argv array,
-            never by interpolating into a string, and never put a secret in argv or an env var.
-            Commit with mcp__github_file_ops__commit_files — ONE commit, message
-            fix: address review round ${{ steps.round.outputs.n }} — which pushes to BRANCH and starts the
-            next review round. You cannot change anything under .github/workflows: this token may not,
-            on purpose. When a [blocking] finding needs such a change, Write the change as a fenced
-            diff naming its path, with one line on which finding it answers, to
-            claude-review-fix-handoff.md at the repository root — NEVER commit that file — and fix the
-            other findings as usual; the next step posts it and hands the PR to a person.
-            A finding you cannot or should not fix (it is wrong, or the fix is out of reach) is left
-            alone and answered in ONE gh pr comment naming it and why — the next round reads it, and
-            a finding still open at the budget goes to a person.
-            The next round reads the PR body as your stated intent, so after committing, bring it in
-            line with the PR as it now stands: read it (gh pr view <PR NUMBER> --json body) and Write
-            the WHOLE new body to claude-review-fix-body.md at the repository root — NEVER commit that
-            file; the next step applies it. Change only what your fix made untrue: the description of
-            the change, and a Closes #<n> line, which stays only if the PR still fully resolves that
-            issue. Keep every other line as it is. Skip the file when nothing in the body went stale.
-            Never end the turn waiting for anything: this is a one-shot CI run.
-          # Agent mode adds no tools of its own, so the file_ops commit tool is named here. The rest
-          # is claude.yml's set minus everything that opens or reaches beyond THIS PR.
-          claude_args: |
-            --max-turns 90
-            --allowedTools "mcp__github_file_ops__commit_files,mcp__github_file_ops__delete_files,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh issue view:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git blame:*),Bash(npm test*),Bash(npm run test*),Bash(yarn test*),Bash(yarn run test*),Bash(cat:*),Bash(wc:*),Bash(diff:*),Bash(grep:*),Bash(ls:*),Read,Grep,Glob,Edit,Write"
-
-      # A fix can make the PR body untrue (#471's walk: a fix that reverted the change left "Adds …"
-      # and `Closes #483` in place, and the next round flagged it). Claude writes the new body to a
-      # file and this step applies it with github.token, so Claude's allowlist gets no `gh pr edit`,
-      # which would also reach labels, base branch and state. Before the hand-off below, so a
-      # needs-human comment never sits under a stale description.
-      - name: Refresh the PR body
-        if: ${{ !cancelled() && steps.round.outputs.fix == 'yes' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          PR: ${{ github.event.workflow_run.pull_requests[0].number }}
-          BODY_FILE: claude-review-fix-body.md
-        run: |
-          [ -s "$BODY_FILE" ] || exit 0
-          gh pr edit "$PR" --body-file "$BODY_FILE" || echo "::warning::Could not refresh PR #$PR's body."
-
-      # Two ways this round ends with a person, both labelled here rather than by Claude, so the
-      # hand-off needs no `gh pr edit` in its allowlist. Runs even when the Claude step failed.
-      #  - A fix that needs .github/workflows/ — which this unattended run may not write
-      #    (claude.yml may: a person starts it) — comes back as a diff for a person to commit.
-      #  - No commit at all (every finding declined, a crash, --max-turns): no push means no next
-      #    review, so the budget branch above would never run and the PR would sit BLOCKING,
-      #    unlabelled, authored by a bot nobody is notified for.
-      - name: Hand the PR to a person
-        if: ${{ !cancelled() && steps.round.outputs.fix == 'yes' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          PR: ${{ github.event.workflow_run.pull_requests[0].number }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          ROUND: ${{ steps.round.outputs.n }}
-          HANDOFF: claude-review-fix-handoff.md
-        run: |
-          f=$(mktemp)
-          if [ -s "$HANDOFF" ]; then
-            {
-              printf '**Not fixed: needs-human — a blocking finding needs a change under `.github/workflows/`, which this fixer may not commit.**\n\n'
-              cat "$HANDOFF"
-              printf '\n\n**What to do:** apply the diff yourself and push, or comment `@claude apply this` to have claude.yml commit it.\n'
-            } > "$f"
-          else
-            # An unreadable head counts as unmoved: a stray label is cheaper than a silent stall.
-            head=$(gh api "repos/$GH_REPO/pulls/$PR" --jq .head.sha) || head="$HEAD_SHA"
-            [ "$head" = "$HEAD_SHA" ] || exit 0
-            printf '**Not fixed: needs-human — the fixer committed nothing for review round %s, so no next round will start.**\n\nIts reasons, if it gave any, are in the comment above; otherwise see the fix run: %s\n\n**What to do:** fix or decline the open findings yourself and push, or merge as it stands.\n' \
-              "$ROUND" "$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID" > "$f"
-          fi
-          gh pr comment "$PR" --body-file "$f" || echo "::warning::Could not comment on PR #$PR."
-          if ! gh pr edit "$PR" --add-label needs-human; then
-            gh label create needs-human --color d93f0b --description "Waiting on a person — see the needs-human comment" || true
-            gh pr edit "$PR" --add-label needs-human || echo "::warning::Could not label PR #$PR."
-          fi
+    uses: ./.github/workflows/reusable-claude-review-fix.yml
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
