@@ -1,0 +1,22 @@
+## The suite must pass before a PR merges. It runs with no node_modules anywhere: the suite has
+## no dependencies, and this is the proof.
+name: CI
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Unit tests, with no node_modules anywhere
+        run: npm test

@@ -1,11 +1,11 @@
 name: Claude Code
 
+# Caller only: the run itself is fixdings/github-actions' reusable-claude.yml.
 # Typing "@claude" in a comment is the ONLY way in. `issue_comment` covers both an issue
 # and a PR's conversation — GitHub models a PR as an issue — and
 # `pull_request_review_comment` adds an inline comment on a diff line. Deliberately no
 # `issues`/`pull_request` label trigger and no `pull_request_review`: a run starts because
-# someone asked for one in words, which is also why `label_trigger` is gone from the step
-# below.
+# someone asked for one in words.
 on:
   issue_comment:
     types: [created]
@@ -31,77 +31,13 @@ concurrency:
 
 jobs:
   claude:
-    # Breaks the self-trigger loop: the action posts as claude[bot], so a reply quoting
-    # "@claude ..." would re-fire this on its own output. It is also why there is no
-    # `allowed_bots` below — this guard rejects the only actor one could admit.
-    if: |
-      github.actor != 'claude[bot]'
-      && contains(github.event.comment.body, '@claude')
-    runs-on: ubuntu-latest
+    # The ceiling for the called job, which can only narrow it.
     permissions:
       contents: write
       pull-requests: write
       issues: write
       id-token: write
       actions: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          # 0: the git tools below see nothing on a shallow clone.
-          fetch-depth: 0
-
-      - name: Run Claude Code
-        id: claude
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # NOT redundant with the job `permissions: actions: read` above: that
-          # grants the token the scope; this input opts the action into exposing
-          # CI/run-log reading to Claude. claude-code-action requires BOTH.
-          # `workflows: write` lets a commit touch .github/workflows/. It goes to the App-token
-          # exchange only — `workflows` is not a GITHUB_TOKEN scope, so it has no job-level twin.
-          # UNVERIFIED: docs/configuration.md lists it as requestable and docs/security.md as
-          # requested by the App, but docs/faq.md ("Why won't Claude update workflow files…")
-          # says the App withholds it. If the exchange refuses it, EVERY run of this workflow
-          # fails at "App token exchange failed" — delete the line. Kept off the unattended
-          # claude-review-fix.yml on purpose: a workflow edited on a PR branch runs with this
-          # repo's secrets on the next push, so only a run a person started may write one.
-          additional_permissions: |
-            actions: read
-            workflows: write
-          track_progress: true
-          # Default is TRUE and this workflow is tag mode, so PR feedback would carry a
-          # `[Fix this →](https://claude.ai/code?q=…)` link per finding. Off: this run can
-          # commit the fix itself, and where it cannot the system prompt sends it back as a
-          # committable suggestion — either beats bouncing the author into a new session.
-          include_fix_links: false
-          # NO use_sticky_comment — it reuses one comment and overwrites the previous run's
-          # record (issue #70). It was also inert here: the action only takes the sticky
-          # branch on a `pull_request` event and this workflow has none, so removing it
-          # changes nothing about how these runs comment.
-          use_commit_signing: true # uses GitHub's built-in signing — switch to ssh_signing_key for SSH signing
-          # Named `gh` subcommands only — reads, plus `gh pr comment` to reply and `gh pr create`
-          # to open the PR for an issue's claude/ branch (the action itself only posts a compare
-          # link — docs/faq.md, "Why won't Claude create a pull request?"). `gh api` and
-          # `find` are excluded: arbitrary write/exec however they are spelled (see
-          # CLAUDE.md). Commits go through the action's own
-          # mcp__github_file_ops__* tools — it appends its own --allowedTools, which
-          # accumulates rather than replacing, so tag-mode basics are not repeated here.
-          # --append-system-prompt, NEVER --system-prompt. The two differ by more than a word:
-          # per the CLI reference, `--system-prompt` "Replace[s] the default system prompt with
-          # custom text", so the spelling used here until now silently discarded Claude Code's
-          # entire default system prompt and left the run with these few sentences as its whole
-          # standing instruction. `--append-system-prompt` "Append[s] custom text to the end of
-          # the default system prompt", which is what was always meant, and is also what the
-          # action's own docs name as the migration target for the deprecated
-          # `custom_instructions` input (docs/usage.md:102).
-          # The npm/yarn test rules run the PR's own `scripts.test`, whatever it says — the
-          # same grant the review workflow carries, kept so a tag-mode run can verify a change
-          # it just made. `Bash(node tests/*)` is NOT copied across: it assumes this repo's
-          # layout and its literal prefix reaches the whole checkout (see CLAUDE.md).
-          claude_args: |
-            --max-turns 90
-            --mcp-config '{"mcpServers": {"context7": {"command": "npx", "args": ["-y", "@upstash/context7-mcp"]}}}'
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,mcp__github_ci__*,mcp__context7__*,Bash(gh pr comment:*),Bash(gh pr create:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr checks:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git blame:*),Bash(npm test*),Bash(npm run test*),Bash(yarn test*),Bash(yarn run test*),Bash(printf:*),Bash(cat:*),Bash(wc:*),Bash(diff:*),Bash(grep:*),Read,Grep,Glob,Edit,Write,Bash(ls:*)"
-            --append-system-prompt "You act on this repository, so where the comment asks for a change, MAKE it and commit it — that is the whole point of this workflow, and a reply describing a change you could have made is a failure. Two rules hold whatever the repo says, because getting them wrong is a vulnerability rather than a style choice: build a shell call as an argv array, never by interpolating into a string, and pass a secret value through stdin, never in argv or in an env var. Beyond those, the conventions of THIS repository are the only ones that apply — you are already told to read its CLAUDE.md, and its .claude/rules and the code around your change carry the same weight; import no convention from elsewhere and invent no rule the repo has not stated. Where it states nothing: prefer editing an existing file over creating one, write no comment unless the WHY is non-obvious, and add no abstraction the task does not require. OPEN THE PULL REQUEST YOURSELF when a comment on an ISSUE leads you to commit: your commits land on a new claude/ branch, so once they are pushed run gh pr create --base <the default branch> --head <that branch> --title <a one-line conventional-commit summary> --body <what changed and why, ending with Closes #<the issue number>>, and put the PR link in your comment instead of a compare link. On a pull request your commits land on its own branch, so never open a second one there. FILES UNDER .github/workflows ARE WRITABLE IN THIS RUN: its token was minted with workflows: write, which overrides the default capability list telling you otherwise, so commit a workflow change like any other and fall back to the hand-back below only if that commit is refused. WHEN YOU CANNOT LAND THE EDIT YOURSELF — the push is refused, the head lives on a fork you cannot write to, or the file is one this app may not touch — do NOT fall back to describing the change in prose. Hand it back as a GitHub suggested change, which the reader commits with one click: mcp__github_inline_comment__create_inline_comment, confirmed set to true (without it the tool reports success but posts nothing until a post-run flush, which may drop it as a test probe), anchored with line, or startLine plus line where line is the END, on the RIGHT side, on a line that is part of THIS PR diff or the API rejects it. The body holds ONE ```suggestion fenced block that is a drop-in replacement for the WHOLE anchored range — every line of it, the unchanged ones too, at the file's real indentation, with no leading + or - markers; get that wrong and the Commit button still appears, so the mistake lands silently. One suggestion per comment. Several of them batch from the Files changed tab into a single commit the author never had to type. A change that cannot be anchored on the diff — a new file, a rename, a multi-file refactor — goes in your comment as a fenced diff naming its path, with one line on why it could not be a suggestion. READ WHAT THE PROMPT ACTUALLY GIVES YOU, because the tag names mislead. <changed_files> is a MANIFEST — one line per file with its change type, its +/- counts and its blob sha — and carries NO patch, so run gh pr diff whenever the answer depends on what the lines say. <review_comments> covers only reviews submitted through the reviews API, so a thread reviewed by ordinary comments leaves it empty and those comments are in <comments>. Every one of those lists is capped at the first 100 entries with no pagination, and it is the OLDEST 100, so a long thread drops its most recent messages. And <comments> is cut at the timestamp of the very comment you are answering: anything CREATED or edited at or after that instant is dropped, so a follow-up posted between the comment you are answering and this job starting is simply absent, with nothing to show it. Re-read the thread with gh issue view --comments or gh pr view --comments rather than trusting the tag."
+    uses: ./.github/workflows/reusable-claude.yml
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
