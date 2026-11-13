@@ -1,6 +1,6 @@
-// `crash_note` in the review workflow's verify step — the shell function that names the crash
+// `crash_note` in the review verify script (actions/review-verify/run.sh) — the shell function that names the crash
 // behind a failed review round. Until this file, nothing exercised it: tests/workflows.test.mjs
-// `bash -n`s every `run:` block, which proves the block PARSES and nothing about what it answers.
+// `bash -n`s every action script, which proves the script PARSES and nothing about what it answers.
 // That is the same gap the peer guard had before #82, and the repo's own rule about it is that a
 // guard nothing drives is indistinguishable from one that works.
 //
@@ -27,10 +27,10 @@ import { test, REPO_DIR } from "./helpers.mjs";
 console.log();
 console.log("review workflow: crash_note");
 
-const WORKFLOW = join(REPO_DIR, ".github/workflows/reusable-claude-code-review.yml");
+const WORKFLOW = join(REPO_DIR, "actions/review-verify/run.sh");
 const source = readFileSync(WORKFLOW, "utf8");
 
-// Lift the function out of the YAML block scalar: from `crash_note() {` to the first line whose
+// Lift the function out of the script: from `crash_note() {` to the first line whose
 // closing brace sits at the same indent. Dedented, it is a standalone bash function — which is the
 // point of extracting rather than re-typing it: a test with its own copy pins the copy.
 function extractFunction(name) {

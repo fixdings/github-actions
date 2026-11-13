@@ -1,0 +1,28 @@
+name: Read the review round
+description: Decides whether the fixer acts on a review run — Claude's own open PR, an unmoved head, a BLOCKING round under budget — and labels the PR needs-human once the budget is spent.
+outputs:
+  fix:
+    description: "`yes` when the round is to be fixed."
+    value: ${{ steps.run.outputs.fix }}
+  n:
+    description: The round's number.
+    value: ${{ steps.run.outputs.n }}
+  budget:
+    description: The round budget.
+    value: ${{ steps.run.outputs.budget }}
+  blocking:
+    description: How many blocking findings the round left.
+    value: ${{ steps.run.outputs.blocking }}
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+        HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        RUN_ID: ${{ github.event.workflow_run.id }}
+        RUN_STARTED_AT: ${{ github.event.workflow_run.run_started_at }}
+      run: bash "$GITHUB_ACTION_PATH/run.sh"

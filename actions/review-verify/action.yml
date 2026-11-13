@@ -1,0 +1,30 @@
+name: Verify the review actually completed
+description: Fails a review round whose tracking comment lacks a finished checklist, exactly one verdict line and a matching status line.
+inputs:
+  review-outcome:
+    description: The review step's `outcome`.
+    required: true
+  execution-file:
+    description: The review step's `execution_file` output.
+    default: ""
+  round-n:
+    description: The round step's `n`.
+    required: true
+  round-budget:
+    description: The round step's `budget`.
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+        PR: ${{ github.event.pull_request.number }}
+        RUN_ID: ${{ github.run_id }}
+        REVIEW_OUTCOME: ${{ inputs.review-outcome }}
+        GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+        EXECUTION_FILE: ${{ inputs.execution-file }}
+        ROUND_N: ${{ inputs.round-n }}
+        ROUND_BUDGET: ${{ inputs.round-budget }}
+      run: bash "$GITHUB_ACTION_PATH/run.sh"

@@ -1,6 +1,6 @@
 name: Claude Code
 
-# Caller only: the run itself is fixdings/github-actions' reusable-claude.yml.
+# Caller only: the run itself is fixdings/github-actions' tag.yml.
 # Typing "@claude" in a comment is the ONLY way in. `issue_comment` covers both an issue
 # and a PR's conversation — GitHub models a PR as an issue — and
 # `pull_request_review_comment` adds an inline comment on a diff line. Deliberately no
@@ -19,12 +19,14 @@ on:
 # group is taken when the run is CREATED, before any job `if` runs, and the action's own
 # tracking comment fires `issue_comment` right back at us — measured on issue #61, that run
 # sat pending five minutes inside the real run's group and ended `cancelled`. A per-run
-# group lets it skip immediately instead.
+# group lets it skip immediately instead. The same goes for a person's comment that does not
+# say "@claude": it is rejected too, and in the shared group it would take the one pending
+# slot from a queued real request, which is then cancelled.
 concurrency:
   # Uniform indentation on purpose: `>-` folds these into ONE line only while no line is
   # more indented than the first, which is what keeps the group a single expression.
   group: >-
-    ${{ github.actor == 'claude[bot]'
+    ${{ (github.actor == 'claude[bot]' || !contains(github.event.comment.body, '@claude'))
     && format('claude-noop-{0}', github.run_id)
     || format('claude-{0}', github.event.issue.number || github.event.pull_request.number) }}
   cancel-in-progress: false
@@ -38,6 +40,6 @@ jobs:
       issues: write
       id-token: write
       actions: read
-    uses: ./.github/workflows/reusable-claude.yml
+    uses: fixdings/github-actions/.github/workflows/tag.yml@v2
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

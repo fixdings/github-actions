@@ -1,0 +1,30 @@
+## Every merge releases, and the PR title picks the bump (see release.yml). This fails a PR whose
+## change would break installed callers — a reusable workflow removed or renamed, an input or
+## secret removed or newly required, a job permission added — when its title has no `!`.
+## `edited` re-runs it when only the title changes. This repo's only; nothing calls it.
+name: Release check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  breaking:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The last release tag, to compare against.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: A change that breaks installed callers needs `!` in the title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: node scripts/breaking-changes.mjs

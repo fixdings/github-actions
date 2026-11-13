@@ -1,0 +1,30 @@
+{
+  "description": "The caller workflows a repo installs, fetched by fixdings/claude-setup's github flow from the floating major tag the callers pin. `source` is the file's path in this repo; it is installed as .github/workflows/<its file name>, unchanged. Each caller's `uses:` names a reusable workflow of this repo at that tag. The three this repo runs itself live in .github/workflows/; callers/ holds the one it does not.",
+  "secrets": ["CLAUDE_CODE_OAUTH_TOKEN"],
+  "callers": [
+    {
+      "source": ".github/workflows/claude.yml",
+      "group": "claude",
+      "summary": "Runs Claude when a comment says @claude.",
+      "vars": []
+    },
+    {
+      "source": ".github/workflows/claude-code-review.yml",
+      "group": "claude",
+      "summary": "Reviews every PR; keep this file's name and path, the other callers match the review run by both.",
+      "vars": ["CLAUDE_CODE_REVIEW_ROUND_BUDGET"]
+    },
+    {
+      "source": ".github/workflows/claude-review-fix.yml",
+      "group": "claude",
+      "summary": "Fixes a blocking review round on a PR Claude opened.",
+      "vars": []
+    },
+    {
+      "source": "callers/claude-auto-merge.yml",
+      "group": "auto-merge",
+      "summary": "Merges a PR whose review is CLEAN, or labels it needs-human. Opt-in: needs 0 required approvals and squash merging.",
+      "vars": ["REVIEW_SENSITIVE_PATHS"]
+    }
+  ]
+}

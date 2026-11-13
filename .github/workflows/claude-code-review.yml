@@ -1,6 +1,6 @@
 name: Claude Auto Review with Tracking
 
-# Caller only: the review itself is fixdings/github-actions' reusable-claude-code-review.yml.
+# Caller only: the review itself is fixdings/github-actions' review.yml.
 # Keep this file's `name:` and path: claude-auto-merge.yml and claude-review-fix.yml match the
 # review run by both.
 on:
@@ -20,7 +20,7 @@ jobs:
       issues: read
       id-token: write
       actions: read
-    uses: ./.github/workflows/reusable-claude-code-review.yml
+    uses: fixdings/github-actions/.github/workflows/review.yml@v2
     with:
       round-budget: ${{ vars.CLAUDE_CODE_REVIEW_ROUND_BUDGET }}
     secrets:

@@ -1,0 +1,426 @@
+#!/usr/bin/env bash
+# Run by actions/auto-merge/action.yml. GitHub ran an inline `run:` under `bash -e` with
+# pipefail; a script invoked as a file gets neither, so it sets them itself.
+set -eo pipefail
+# Shared with the other actions: actions/lib/, in the same sparse checkout.
+. "$GITHUB_ACTION_PATH/../lib/run-comment.sh"
+. "$GITHUB_ACTION_PATH/../lib/needs-human.sh"
+
+# Entries: a trailing `/` is a directory prefix, no `/` is a file name at any depth,
+# anything else an exact path, a leading `!` an exception. A path is sensitive when a
+# plain entry matches it and no exception does. The default adds the claude-code-action
+# restore set (`.mcp.json` … `.husky/`), files that run code or instruct Claude.
+sensitive="${REVIEW_SENSITIVE_PATHS:-.github/ .claude/ !.claude/specs/ CLAUDE.md CLAUDE.local.md .mcp.json .claude.json .gitmodules .ripgreprc .husky/}"
+
+# No apostrophe inside any of these programs: each is one single-quoted shell word.
+SENSITIVE_AWK='
+BEGIN { n = split(list, e, " ") }
+{
+  path = $0; base = path; sub(/.*\//, "", base); hit = 0; ex = 0
+  for (i = 1; i <= n; i++) {
+    p = e[i]; neg = 0
+    if (substr(p, 1, 1) == "!") { neg = 1; p = substr(p, 2) }
+    if (p ~ /\/$/) m = (index(path, p) == 1)
+    else if (index(p, "/") == 0) m = (base == p)
+    else m = (path == p)
+    if (m) { if (neg) ex = 1; else hit = 1 }
+  }
+  if (hit && !ex) print path
+}'
+# Every verdict line outside a code fence, so a review quoting the grammar is not read
+# as its verdict. The caller wants exactly one.
+VERDICT_AWK='
+{ sub(/\r$/, ""); sub(/[[:space:]]+$/, "") }
+/^[[:space:]]*```/ { fence = !fence; next }
+!fence && /^VERDICT: (CLEAN|BLOCKING [1-9][0-9]*)$/ { print }'
+# Step 11's list: every `[non-blocking]` list item outside a code fence (any marker, a
+# bolded tag, nested or not), as a `- [ ]` item, with the lines indented past its marker
+# that continue it, dedented by the marker's own indent. A blank line inside an item is
+# held, and printed only if a continuation follows. A fence that opens inside an item
+# holds everything up to its closing fence, column-0 code too (re-indented to the fence,
+# so the filed item keeps it): otherwise the closing fence would open a top-level one
+# that swallows every later finding. Any other line ends the item.
+FOLLOWUPS_AWK='
+function lead(s) { match(s, /^[[:space:]]*/); return RLENGTH }
+function out(s) { if (lead(s) >= ind) return substr(s, ind + 1); sub(/^[[:space:]]+/, "", s); return s }
+{ sub(/\r$/, "") }
+inner {
+  s = out($0)
+  if (s ~ /[^[:space:]]/ && lead(s) < find) s = substr(pad, 1, find) s
+  print s
+  if ($0 ~ /^[[:space:]]*```/) inner = 0
+  next
+}
+on && /^[[:space:]]*$/ { held = held "\n"; next }
+!fence && /^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]+(\*\*)?\[non-blocking\]/ {
+  held = ""; on = 1; ind = lead($0)
+  sub(/^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]+/, "- [ ] "); print; next
+}
+on && lead($0) > ind {
+  printf "%s", held; held = ""; s = out($0); print s
+  if (s ~ /^[[:space:]]*```/) { inner = 1; find = lead(s); pad = sprintf("%" find "s", "") }
+  next
+}
+{ held = "" }
+/^[[:space:]]*```/ { fence = !fence; on = 0; next }
+fence { next }
+{ on = 0 }'
+# A land PR body's `## Members` section: the lines after its heading, up to the next
+# `## ` heading. It becomes the land squash's commit body.
+MEMBERS_AWK='
+{ sub(/\r$/, "") }
+/^## Members[[:space:]]*$/ { on = 1; next }
+on && /^## / { exit }
+on { print }'
+# How many reviewers stand at "changes requested", over every page (`jq -s`). Only
+# APPROVED, CHANGES_REQUESTED and DISMISSED set a decision — a later COMMENTED leaves a
+# request standing — and the latest one per reviewer wins (ids grow with time). With
+# approvals at 0 GitHub would merge past a request, so the gate stops on it instead.
+# Only reviewers with write access count, as in GitHub's own review decision: an
+# outsider's request is a comment, not a block anyone can place on any PR.
+REVIEWS_JQ='
+add // []
+| map(select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR"))
+| map(select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))
+| group_by(.user.login // "")
+| map(max_by(.id) | select(.state == "CHANGES_REQUESTED"))
+| length'
+
+# The comment a stop posts: the opener `watch-pr` reads, the detail, and what the user
+# does about THIS reason. A token outside the five is a typo here, so it fails rather
+# than post a comment no reader recognises.
+comment_body() {
+  local todo
+  case "$1" in
+    needs-human) todo="Review the listed paths or the author's change yourself; merge it, or push and play." ;;
+    review-failed) todo="Open the review run (linked above); fix the cause and re-run it, then play." ;;
+    merge-refused) todo="Fix the named check or refusal, then play." ;;
+    changes-requested) todo="Answer the reviewer's request, push, then play." ;;
+    gate-error) todo="Re-run the gate run (linked above), or merge it yourself." ;;
+    *) return 1 ;;
+  esac
+  printf '**Not merged: %s — %s.**\n\n' "$1" "$2"
+  if [ -n "$3" ]; then printf '%s\n\n' "$3"; fi
+  printf '**What to do:** %s\n' "$todo"
+}
+
+# Label + one comment; the body goes through a file so no PR-controlled text (file
+# names) is ever echoed into the log, where it could issue workflow commands.
+needs_human() {
+  local f
+  f=$(mktemp)
+  comment_body "$1" "$2" "$3" > "$f"
+  gh pr comment "$PR" --body-file "$f" || echo "::warning::Could not comment on PR #$PR."
+  label_needs_human "$PR"
+  echo "PR #$PR needs a human: $1."
+}
+
+# 2.9's exception: claude.yml's own PR (`gh pr create` from an issue, so author_association
+# NONE). Trusted only in a PRIVATE repo: there every issue and comment Claude acted on
+# was written by a collaborator, so the diff is an insider's request. In a public repo
+# anyone can write the issue Claude follows. Step 11 files such a PR's leftovers.
+claude_exception() {
+  case "$REPO_PRIVATE/$pr_author_login/$pr_head_ref" in
+    "true/$CLAUDE_BOT/claude/"*) return 0 ;;
+  esac
+  return 1
+}
+
+# The stop-or-merge choice, over the facts the reads below gathered — pure, so the suite
+# runs it over fixtures. Prints a token and its cause, `skip …`, or `merge`. The ORDER is
+# the point:
+#  - staleness first (a moved head gets its own review run, and that run's completion
+#    decides; a closed or draft PR is not merged), so a stale run gets no label — even a
+#    failed one, even past a failed read. Only the PR read itself cannot wait for it.
+#  - a truncated file list before anything judged from it: the workflow and sensitive
+#    checks would be guesses.
+#  - an edited review workflow before a failed or verdict-less review: the action skips
+#    a PR that edits it while its run still passes, so that is the real cause.
+decide() {
+  local count
+  if [ "$failed" = pull-request ]; then echo "gate-error pull-request"; return; fi
+  base_ok=no; case "$pr_base" in "$DEFAULT_BRANCH" | group/*) base_ok=yes ;; esac
+  if [ "$pr_state" != open ] || [ "$pr_draft" != false ] || [ "$base_ok" != yes ] || [ "$pr_head" != "$HEAD_SHA" ]; then
+    echo "skip stale"; return
+  fi
+  if [ -n "$failed" ]; then echo "gate-error $failed"; return; fi
+  if [ "$nfiles" != "$pr_files" ]; then echo "needs-human toomany"; return; fi
+  if [ -n "$wf_changed" ]; then echo "needs-human workflow"; return; fi
+  case "$author" in
+    OWNER | MEMBER | COLLABORATOR) ;;
+    *)
+      case "$author_perm" in
+        admin | write) ;;
+        *) claude_exception || { echo "needs-human outsider"; return; } ;;
+      esac ;;
+  esac
+  if [ -n "$hits" ]; then echo "needs-human sensitive"; return; fi
+  if [ "$RUN_CONCLUSION" != success ]; then echo "review-failed run"; return; fi
+  count=$(printf '%s' "$verdicts" | grep -c . || true)
+  if [ "$count" -ne 1 ]; then echo "review-failed verdict"; return; fi
+  if [ "${changes:-0}" != 0 ]; then echo "changes-requested"; return; fi
+  if [ "$verdicts" != "VERDICT: CLEAN" ]; then echo "skip blocking"; return; fi
+  if [ -n "$is_land" ] && [ -z "$(printf '%s' "$members" | tr -d '[:space:]')" ]; then echo "needs-human members"; return; fi
+  echo merge
+}
+
+# The reads. Each is checked — a failure records the FIRST failed read and goes on,
+# so it becomes a `gate-error` stop naming the read (after the staleness check), not a
+# job that dies unseen under `bash -e`.
+failed=""
+fail() { failed=${failed:-$1}; }
+
+# 1. The PR: state, draft, head, base, its changed-file count — and the author's
+#    association with the repo (an outside author's diff wrote the verdict's input, so
+#    it is not trusted to merge). Its head branch says whether it is a group's land PR.
+pr=$(gh api "repos/$GH_REPO/pulls/$PR" --jq '[.state, .draft, .head.sha, .base.ref, .author_association, .changed_files, .head.ref, .user.login] | @tsv') || fail pull-request
+IFS=$'\t' read -r pr_state pr_draft pr_head pr_base author pr_files pr_head_ref pr_author_login <<< "$pr"
+
+# 1b. The author's permission on the repo, read only when the association does not
+#     already trust them. `author_association` hides an org member whose membership is
+#     private (the gate's token sees them as an outsider), so write or admin access
+#     trusts the author too: it is the access an insider's association stands for.
+#     Maintain reads as write. A 404 is "not a collaborator", not a failed read.
+author_perm=""
+case "$author" in
+  OWNER | MEMBER | COLLABORATOR) ;;
+  *)
+    if [ -n "$pr_author_login" ]; then
+      perm_err=$(mktemp)
+      if author_perm=$(gh api "repos/$GH_REPO/collaborators/$pr_author_login/permission" --jq .permission 2>"$perm_err"); then :
+      elif grep -qF '(HTTP 404)' "$perm_err"; then author_perm=none
+      else author_perm=""; fail author-permission
+      fi
+    fi ;;
+esac
+
+# A land PR — head `group/<g>`, base the default branch — squashes with its body's
+# `## Members` section as the commit body, so the land commit names every member's PRs.
+# A member's PR INTO `group/<g>` is not one.
+is_land=""
+case "$pr_head_ref" in group/*) [ "$pr_base" = "$DEFAULT_BRANCH" ] && is_land=yes ;; esac
+members=""
+if [ -n "$is_land" ]; then
+  land_body=$(gh api "repos/$GH_REPO/pulls/$PR" --jq .body) || fail land-body
+  members=$(printf '%s\n' "$land_body" | awk "$MEMBERS_AWK")
+fi
+
+# 2. The changed files, paginated (`gh pr view --json files` stops at 100 with no
+#    paging). Each file's old name too, so renaming a file AWAY is a change to it. The
+#    endpoint itself stops at 3000 files, so the count is compared with the PR's
+#    `changed_files` and a short list stops rather than pass unseen paths.
+files_json=$(gh api --paginate "repos/$GH_REPO/pulls/$PR/files?per_page=100") || fail changed-files
+nfiles=$(printf '%s' "$files_json" | jq -s 'add // [] | length') || fail changed-files
+files=$(printf '%s' "$files_json" | jq -rs 'add // [] | .[] | .filename, (.previous_filename // empty)') || fail changed-files
+
+# 3. Did the PR touch the review workflow? A PR that edits it can drop the reviewer and
+#    print a CLEAN of its own — so an edit, a delete or a rename away is never merged
+#    here, whatever the sensitive-path list (a repo override may leave out `.github/`).
+#    Judged from the PR's own file list, NOT by comparing the head's blob with the
+#    default branch's: a `pull_request` run uses the merge ref, so a PR that does not
+#    touch the file ran the default's copy, even when it is merely behind it.
+wf_changed=""
+if printf '%s\n' "$files" | grep -qxF -- "$REVIEW_WORKFLOW"; then wf_changed=yes; fi
+
+# 4. Sensitive paths, judged from THIS file's list — the default branch's copy — not
+#    from the PR.
+hits=$(printf '%s\n' "$files" | awk -v list="$sensitive" "$SENSITIVE_AWK")
+
+# 5. Human change requests.
+reviews=$(gh api --paginate "repos/$GH_REPO/pulls/$PR/reviews?per_page=100") || fail reviews
+changes=$(printf '%s' "$reviews" | jq -s "$REVIEWS_JQ") || fail reviews
+
+# 6. The verdict, from this run's tracking comment — actions/lib/run-comment.sh, the verify
+#    step's own selection, paged from the run's start. A failed run has no verdict to read.
+verdicts=""
+comment_url=""
+if [ "$RUN_CONCLUSION" = success ]; then
+  comment=$(run_comment "$GH_REPO" "$PR" "$RUN_ID" "$RUN_STARTED_AT") || fail review-comment
+  body=$(printf '%s' "$comment" | jq -r '.body // ""') || fail review-comment
+  comment_url=$(printf '%s' "$comment" | jq -r '.html_url // ""') || fail review-comment
+  verdicts=$(printf '%s\n' "$body" | awk "$VERDICT_AWK")
+fi
+
+run_link="$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$RUN_ID"
+gate_link="$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
+decision=$(decide)
+case "$decision" in
+  "skip stale")
+    echo "Skipped: PR #$PR is $pr_state, draft=$pr_draft, on an accepted base=$(case "$pr_base" in "$DEFAULT_BRANCH" | group/*) echo yes ;; *) echo no ;; esac), head moved=$([ "$pr_head" != "$HEAD_SHA" ] && echo yes || echo no)."
+    exit 0 ;;
+  "skip blocking")
+    echo "Skipped: $verdicts — the review rounds handle it."
+    exit 0 ;;
+  "gate-error "*)
+    needs_human gate-error "the gate could not read \`${decision#gate-error }\`" "The \`gh\` read failed, so nothing was decided — see the gate run: $gate_link"
+    exit 0 ;;
+  "needs-human toomany")
+    needs_human needs-human "too many files to check" "The PR changes $pr_files files, but the files API returned only $nfiles, so the review workflow and the sensitive paths cannot all be checked."
+    exit 0 ;;
+  "needs-human workflow")
+    needs_human needs-human "this PR changes the review workflow" "This PR edits, deletes or renames \`$REVIEW_WORKFLOW\`, so the review that ran cannot be trusted to have been the real one."
+    exit 0 ;;
+  "needs-human outsider")
+    # What the trust check read, so a wrong stop is diagnosable from the log. All three
+    # are GitHub-controlled: two enums and a login, which is [A-Za-z0-9-] (plus `[bot]`).
+    echo "Outsider: author_association=${author:-unread}, permission=${author_perm:-unread}, login=${pr_author_login:-unread}."
+    needs_human needs-human "the author is not an owner, member or collaborator, and has no write access" "The verdict was written by a model that read an outside author's diff, so it does not merge on its own."
+    exit 0 ;;
+  "needs-human sensitive")
+    needs_human needs-human "it changes sensitive paths" "$(printf '```\n%s\n```' "$hits")"
+    exit 0 ;;
+  "review-failed run")
+    needs_human review-failed "the review run failed" "Review run: $run_link"
+    exit 0 ;;
+  "review-failed verdict")
+    needs_human review-failed "the review left no single verdict" "The run's tracking comment does not hold exactly one \`VERDICT:\` line. Review run: $run_link"
+    exit 0 ;;
+  changes-requested)
+    needs_human changes-requested "a reviewer requested changes" "$changes reviewer(s) currently request changes on this PR."
+    exit 0 ;;
+  "needs-human members")
+    needs_human needs-human "the land PR has no ## Members section" "A PR from group/${pr_head_ref#group/} into the default branch squashes with its member list as the commit body; add the section, then run /spec-workflow:land ${pr_head_ref#group/}."
+    exit 0 ;;
+  merge) ;;
+  *)
+    echo "::error::Unknown gate decision."
+    exit 1 ;;
+esac
+
+# 7. Every other check on the head is green. `--watch` waits out pending ones (this
+#    workflow's own run is not among them: a workflow_run job reports on the default
+#    branch, not the PR). Merging past a red check is what auto-merge would refuse too.
+#    `--watch` has no limit of its own, and the job's `timeout-minutes: 30` would kill
+#    the job with no label and no comment — so the wait is capped below it (leaving
+#    room for the merge and the stop), and a check still pending then is a stop too.
+#    Every check counts, not only `--required` ones: a red optional check stops the merge
+#    though GitHub's own rules would allow it — an unattended merge waits for a person.
+checks_minutes=20
+checks_rc=0
+timeout "${checks_minutes}m" gh pr checks "$PR" --watch --interval 30 > /dev/null || checks_rc=$?
+if [ "$checks_rc" -eq 124 ]; then
+  needs_human merge-refused "checks are still pending after $checks_minutes min" "The review is clean, but \`gh pr checks $PR\` was still waiting on a check after $checks_minutes minutes — see the gate run: $gate_link"
+  exit 0
+fi
+# `--watch` exits 1 for a red check AND for a failed read, so its code only says when to
+# look. The verdict is one `--json` read, and its output decides whenever it is a JSON
+# list, whatever the exit code: gh 2.101 exits 0 there whatever the checks say, and a gh
+# that returned the plain codes (1 red, 8 pending) must not turn a red check into a read
+# error. With no JSON, gh's "no checks reported" is a stop of its own, the rest a failed
+# read. The read is capped like the watch, so a hung API stops with a label, not a killed job.
+checks_err=$(mktemp)
+checks_unread="the gate could not read \`checks\`"
+# One parse decides the output's kind — `list`, `empty`, or anything else (`[]` followed by
+# junk fails jq, so it is not `empty`). The read's own exit code is not consulted.
+checks_kind=""
+if ! { checks_json=$(timeout 2m gh pr checks "$PR" --json name,bucket 2> "$checks_err"); checks_kind=$(printf '%s' "$checks_json" | jq -r 'if type != "array" then "other" elif length == 0 then "empty" else "list" end' 2> /dev/null); }; then
+  checks_kind=other
+fi
+if [ "$checks_kind" = empty ] || { [ "$checks_kind" != list ] && grep -q '^no checks reported' "$checks_err"; }; then
+  needs_human merge-refused "no checks reported on the head" "The review is clean, but \`gh pr checks $PR\` found no checks on the head — see the gate run: $gate_link"
+  exit 0
+elif [ "$checks_kind" != list ]; then
+  # gh's error into the log the comment links, each line prefixed so none is read as a
+  # workflow command.
+  sed 's/^/gh: /' "$checks_err" >&2
+  needs_human gate-error "$checks_unread" "The \`gh\` read failed, so nothing was decided — see the gate run: $gate_link"
+  exit 0
+fi
+# One pass tags each check that is not green `red` (fail, cancel) or `pending` (anything
+# else: `pending`, a bucket gh adds later, a malformed entry). It cannot fail on a list —
+# a jq error here would kill the job with no stop. Names go into a fenced block, one per
+# line, so backticks are dropped and line breaks flattened.
+not_green=$(printf '%s' "$checks_json" | jq -r '.[] | (if type == "object" then . else {name: tostring, bucket: null} end) | select(.bucket != "pass" and .bucket != "skipping") | "\(if .bucket == "fail" or .bucket == "cancel" then "red" else "pending" end)\t\(.name // "" | tostring | gsub("`"; "") | gsub("[\t\r\n]"; " ")) (\(.bucket))"')
+red=$(printf '%s\n' "$not_green" | awk -F '\t' '$1 == "red" { print $2 }')
+pending=$(printf '%s\n' "$not_green" | awk -F '\t' '$1 == "pending" { print $2 }')
+if [ -n "$red" ]; then
+  needs_human merge-refused "a check on the head is not green" "$(printf 'The review is clean, but these checks are not green — see the gate run: %s\n\n```\n%s\n```' "$gate_link" "$red")"
+  exit 0
+elif [ -n "$pending" ] && [ "$checks_rc" -ne 0 ]; then
+  # The watch ended early with checks still running — its own read failed, or a check
+  # it saw red was re-run since: either way nothing was decided.
+  needs_human gate-error "$checks_unread" "$(printf '`gh pr checks --watch` stopped (exit %s) while these checks had not finished — a failed read, or a red check re-run since — so nothing was decided. See the gate run: %s\n\n```\n%s\n```' "$checks_rc" "$gate_link" "$pending")"
+  exit 0
+elif [ -n "$pending" ]; then
+  # The watch finished, then a check had not: a re-run, or a state gh does not call done.
+  needs_human merge-refused "a check on the head is still pending" "$(printf 'The review is clean, but these checks had not finished when the wait ended — see the gate run: %s\n\n```\n%s\n```' "$gate_link" "$pending")"
+  exit 0
+fi
+
+# 8. Merge exactly the reviewed commit: `--match-head-commit` refuses if anything was
+#    pushed since. Step 10 deletes the head branch. Accepted, and
+#    documented: a merge made with GITHUB_TOKEN creates no new workflow run, so
+#    the default branch gets no `push` workflow for it (GitHub docs, "Triggering a
+#    workflow from a workflow"). A land PR's squash is titled `feat(group): <g> (#<PR>)`
+#    with its `## Members` section as the body, passed through a file so no PR text
+#    becomes a shell word or a log line; any other PR keeps GitHub's default message.
+if [ -n "$is_land" ]; then
+  body_file=$(mktemp)
+  printf '%s\n' "$members" > "$body_file"
+  merge_cmd=(gh pr merge "$PR" --squash --match-head-commit "$HEAD_SHA" --subject "feat(group): ${pr_head_ref#group/} (#$PR)" --body-file "$body_file")
+else
+  merge_cmd=(gh pr merge "$PR" --squash --match-head-commit "$HEAD_SHA")
+fi
+if ! "${merge_cmd[@]}"; then
+  needs_human merge-refused "the merge was refused" "\`gh pr merge --squash --match-head-commit $HEAD_SHA\` failed — see the gate run: $gate_link"
+  exit 0
+fi
+echo "Merged PR #$PR at $HEAD_SHA."
+
+# 9. Close the issues the PR links (`Closes #n`). GitHub closes them for a merge a person
+#    makes, but not for one made with GITHUB_TOKEN — measured: every gate merge left its
+#    linked issue open, every hand merge closed it within seconds. Only this repo's issues:
+#    a link to another repo's issue carries a number that means something else here. The
+#    PR is merged already, so a failure here is a warning, never a stop.
+if ! linked=$(gh pr view "$PR" --json closingIssuesReferences --jq '.closingIssuesReferences[] | "\(.repository.owner.login)/\(.repository.name) \(.number)"'); then
+  echo "::warning::Could not read the issues PR #$PR closes; close them by hand."
+  linked=""
+fi
+for n in $(printf '%s\n' "$linked" | awk -v repo="$GH_REPO" '$1 == repo && $2 ~ /^[0-9]+$/ { print $2 }'); do
+  gh issue close "$n" --reason completed --comment "Closed by #$PR, merged by the auto-merge gate (a merge made with GITHUB_TOKEN does not close linked issues itself)." \
+    || echo "::warning::Could not close issue #$n."
+done
+
+# 10. Delete the merged head branch, as the repo's delete-branch-on-merge would for a person's
+#     merge — it does not fire for a merge made with GITHUB_TOKEN, as linked issues stay open
+#     (step 9). Never the default or a protected branch, nor one an open PR targets (a
+#     group branch while a member PR is open on it). The PR is merged, so every failure is
+#     a warning, never a stop.
+skip=""
+if [ "$HEAD_BRANCH" = "$DEFAULT_BRANCH" ]; then skip="it is the default branch"
+elif ! protected=$(gh api "repos/$GH_REPO/branches/$HEAD_BRANCH" --jq .protected); then
+  echo "::warning::Could not read whether $HEAD_BRANCH may be deleted; delete it by hand."
+elif [ "$protected" = "true" ]; then skip="it is protected"
+elif ! based=$(gh pr list --base "$HEAD_BRANCH" --state open --json number --jq length); then
+  echo "::warning::Could not read whether $HEAD_BRANCH may be deleted; delete it by hand."
+elif [ "$based" != "0" ]; then skip="$based open PR(s) target it"
+elif ! gh api -X DELETE "repos/$GH_REPO/git/refs/heads/$HEAD_BRANCH"; then
+  echo "::warning::Could not delete branch $HEAD_BRANCH; delete it by hand."
+fi
+[ -z "$skip" ] || echo "::notice::Kept branch $HEAD_BRANCH: $skip."
+
+# 11. File the leftovers of claude.yml's own PR (2.9's exception). A person's PR has
+#     `watch-pr` to file its non-blocking findings after the merge; this one had nobody
+#     watching, so they would live only in a closed PR's comment. The verdict comment
+#     restates every finding still open, so it alone is the list: each `[non-blocking]`
+#     item outside a code fence, with its indented continuation lines. Text goes through
+#     files only — it quotes the diff. A zero-width space after each `@` and before each
+#     `#<digit>` keeps the model's text from pinging people or cross-referencing issues
+#     nobody reviewed. Merged already, so a failure is a warning.
+admitted=""
+case "$author" in OWNER | MEMBER | COLLABORATOR) ;; *) claude_exception && admitted=yes ;; esac
+if [ -n "$admitted" ]; then
+  zw=$(printf '\342\200\213')
+  leftovers=$(printf '%s\n' "$body" | awk "$FOLLOWUPS_AWK" | sed -e "s/@/@$zw/g" -e "s/#\([0-9]\)/#$zw\1/g")
+  if [ -n "$leftovers" ]; then
+    review_link=${comment_url:-$run_link}
+    f=$(mktemp)
+    printf 'Non-blocking review findings left open when the auto-merge gate merged #%s (opened by claude.yml, so no `watch-pr` filed them). From the final review: %s\n\n%s\n' \
+      "$PR" "$review_link" "$leftovers" > "$f"
+    if issue=$(gh issue create --title "Review follow-ups from #$PR" --body-file "$f"); then
+      gh pr comment "$PR" --body "Follow-ups filed: $issue" || echo "::warning::Could not link the follow-up issue on PR #$PR."
+    else
+      echo "::warning::Could not file PR #$PR's non-blocking findings; they are in the review comment: $review_link"
+    fi
+  fi
+fi

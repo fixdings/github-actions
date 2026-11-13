@@ -1,6 +1,5 @@
 // The reusable workflows: what every caller runs. The callers themselves (trigger, `run-name`,
-// `concurrency`, `permissions`) are fixdings/claude-setup's `claude/integrations/github/` and are
-// tested there.
+// `concurrency`, `permissions`) are in `callers/` and are tested in `callers.test.mjs`.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -13,11 +12,18 @@ console.log("Claude GitHub workflows");
 
 // The two that run claude-code-action with an allowlist; the gate and the fixer are below.
 const WORKFLOWS = [
-  ".github/workflows/reusable-claude.yml",
-  ".github/workflows/reusable-claude-code-review.yml",
+  ".github/workflows/tag.yml",
+  ".github/workflows/review.yml",
 ];
 
 const readWorkflow = (rel) => readFileSync(join(REPO_DIR, rel), "utf8");
+// The composite actions the reusable workflows run: actions/<name>/action.yml and its run.sh.
+const ACTIONS_DIR = "actions/";
+const ACTIONS = readdirSync(join(REPO_DIR, ACTIONS_DIR)).filter((n) => existsSync(join(REPO_DIR, ACTIONS_DIR, n, "action.yml")));
+const actionScript = (name) => readWorkflow(`${ACTIONS_DIR}${name}/run.sh`);
+const actionYml = (name) => readWorkflow(`${ACTIONS_DIR}${name}/action.yml`);
+// Where a script finds actions/lib/ when a test runs it from stdin, as the runner sets it.
+const actionPath = (name) => join(REPO_DIR, ACTIONS_DIR, name);
 // Trim HERE, once, rather than at each call site. Every check below anchors on `^Bash\(`, so
 // a single space after a comma in the YAML turns each rule into " Bash(...)" and every one of
 // those anchors silently stops matching — the interpreter ban then goes green on `Bash(node:*)`
@@ -29,7 +35,7 @@ const allowedTools = (src) => {
   return m[1].split(",").map((r) => r.trim()).filter(Boolean);
 };
 
-const TAG_WORKFLOW = ".github/workflows/reusable-claude.yml";
+const TAG_WORKFLOW = ".github/workflows/tag.yml";
 // The `prompt:` literal block ONLY. Scoping matters: the sensitive-path list also appears in
 // the warning step's `sensitive=` line, so an assertion run over the whole file is satisfied by
 // the shell step and would pass with the prompt gutted. Caught by review on #101 — the original
@@ -44,7 +50,7 @@ const promptBlock = (src) => {
 const collapsed = (block) => block.replace(/\s+/g, " ");
 
 // Typing "@claude" in a comment is meant to be the ONLY way in. The caller's triggers are
-// pinned in claude-setup; the job `if` that admits a comment lives here.
+// pinned in callers.test.mjs; the job `if` that admits a comment lives here.
 test("the Claude tag workflow runs only for a comment that says @claude", () => {
   const src = readWorkflow(TAG_WORKFLOW);
   // Both caller events carry the text at the same path, so one check covers both.
@@ -60,9 +66,12 @@ test("the Claude tag workflow runs only for a comment that says @claude", () => 
 // here is evaluated in the CALLER's context, so it would share the caller's group and wait on
 // the caller's own run. The caller owns both.
 const REUSABLE_DIR = ".github/workflows/";
-const REUSABLE = readdirSync(join(REPO_DIR, REUSABLE_DIR)).filter((n) => /^reusable-.*\.ya?ml$/.test(n));
+// Told apart from this repo's own callers by their trigger, not their name.
+const REUSABLE = readdirSync(join(REPO_DIR, REUSABLE_DIR))
+  .filter((n) => /\.ya?ml$/.test(n) && /^ {2}workflow_call:$/m.test(readWorkflow(REUSABLE_DIR + n)));
 test("every reusable workflow is workflow_call only, with no concurrency of its own", () => {
-  assert.equal(REUSABLE.length, 4, `expected the four reusable workflows, found ${REUSABLE}`);
+  assert.deepEqual(REUSABLE.sort(), ["auto-merge.yml", "review-fix.yml", "review.yml", "tag.yml"],
+    `expected the four reusable workflows, found ${REUSABLE}`);
   for (const f of REUSABLE) {
     const src = readWorkflow(REUSABLE_DIR + f);
     const on = src.match(/^on:\n(?: .*\n|\n)*/m);
@@ -112,26 +121,83 @@ const runBlocks = (src) => {
 // expression may legitimately span lines inside a folded scalar (claude.yml's concurrency group).
 test("no workflow holds an empty expression, which GitHub rejects", () => {
   let files = 0;
-  for (const f of readdirSync(join(REPO_DIR, REUSABLE_DIR)).filter((n) => /\.ya?ml$/.test(n))) {
-    for (const [i, line] of readWorkflow(REUSABLE_DIR + f).split("\n").entries()) {
-      assert.doesNotMatch(line, /\$\{\{\s*\}\}/, `${REUSABLE_DIR}${f}:${i + 1}: an empty expression — GitHub rejects the whole file:\n    ${line.trim()}`);
+  const yamls = [
+    ...readdirSync(join(REPO_DIR, REUSABLE_DIR)).filter((n) => /\.ya?ml$/.test(n)).map((n) => REUSABLE_DIR + n),
+    ...ACTIONS.map((a) => `${ACTIONS_DIR}${a}/action.yml`),
+    ...readdirSync(join(REPO_DIR, "callers")).filter((n) => /\.ya?ml$/.test(n)).map((n) => `callers/${n}`),
+  ];
+  for (const f of yamls) {
+    for (const [i, line] of readWorkflow(f).split("\n").entries()) {
+      assert.doesNotMatch(line, /\$\{\{\s*\}\}/, `${f}:${i + 1}: an empty expression — GitHub rejects the whole file:\n    ${line.trim()}`);
     }
     files++;
   }
-  assert.ok(files >= 4, `expected the workflow files, found ${files}`);
+  assert.ok(files >= 4 + ACTIONS.length, `expected the workflow and action files, found ${files}`);
 });
 
-test("every workflow `run:` block is valid shell", () => {
+test("every action script and workflow `run:` block is valid shell", () => {
   let checked = 0;
-  for (const wf of WORKFLOWS) {
-    for (const [i, block] of runBlocks(readWorkflow(wf)).entries()) {
-      const r = spawnSync("bash", ["-n"], { input: block, encoding: "utf8" });
-      assert.equal(r.status, 0, `${wf}: run block #${i + 1} is not valid shell\n${r.stderr}`);
-      checked++;
+  const shells = [
+    ...ACTIONS.map((a) => [`${ACTIONS_DIR}${a}/run.sh`, actionScript(a)]),
+    ...readdirSync(join(REPO_DIR, ACTIONS_DIR, "lib")).map((f) => [`${ACTIONS_DIR}lib/${f}`, readWorkflow(`${ACTIONS_DIR}lib/${f}`)]),
+    ...REUSABLE.flatMap((f) => runBlocks(readWorkflow(REUSABLE_DIR + f)).map((b, i) => [`${f} run block #${i + 1}`, b])),
+  ];
+  for (const [where, src] of shells) {
+    const r = spawnSync("bash", ["-n"], { input: src, encoding: "utf8" });
+    assert.equal(r.status, 0, `${where} is not valid shell\n${r.stderr}`);
+    checked++;
+  }
+  // Or a change to the layout silently reduces this to a test of nothing.
+  assert.ok(checked >= ACTIONS.length + 1, `expected every action script and the fixer's run block, found ${checked}`);
+});
+
+// The scripts behind the reusable workflows live in actions/<name>/, and a workflow reaches them
+// through a checkout of THIS repo at `job.workflow_sha`: the commit of the called workflow, so a
+// caller pinned to any tag runs the scripts that shipped with it. Every action is used, every use
+// names an action that exists, and the checkout follows any checkout of the PR, which would
+// empty the workspace and the actions with it. After Claude has run — with Edit/Write, or the
+// PR's own tests — the workspace copy is not trusted: an action runs only from a checkout made
+// after that step, into a directory deleted first so nothing planted in its .git/ runs.
+test("every reusable workflow runs its own actions, checked out at its own commit", () => {
+  const used = new Set();
+  for (const f of REUSABLE) {
+    const steps = stepBlocks(readWorkflow(REUSABLE_DIR + f));
+    const isTools = (s) => /repository: \$\{\{ job\.workflow_repository \}\}\n\s*ref: \$\{\{ job\.workflow_sha \}\}\n\s*path: \.fixdings-actions\n/.test(s);
+    const isPr = (s) => /uses: actions\/checkout@/.test(s) && !isTools(s);
+    const isRemove = (s) => /^ {8}run: rm -rf \.fixdings-actions$/m.test(s);
+    const claude = steps.findIndex((s) => /uses: anthropics\/claude-code-action@/.test(s));
+    for (const [i, s] of steps.entries()) {
+      const m = s.match(/uses: \.\/\.fixdings-actions\/actions\/([\w-]+)\n/);
+      if (!m) continue;
+      used.add(m[1]);
+      assert.ok(ACTIONS.includes(m[1]), `${f}: ${m[1]} is not an action under ${ACTIONS_DIR}`);
+      const lastTools = steps.slice(0, i).findLastIndex(isTools);
+      const lastPr = steps.slice(0, i).findLastIndex(isPr);
+      assert.ok(lastTools > lastPr, `${f}: ${m[1]} runs without the actions checked out after the PR's own checkout`);
+      if (claude !== -1 && i > claude) {
+        assert.ok(lastTools > claude, `${f}: ${m[1]} runs after Claude from a checkout Claude could rewrite`);
+        assert.ok(isRemove(steps[lastTools - 1]), `${f}: the checkout before ${m[1]} must follow \`rm -rf .fixdings-actions\``);
+        // It must run whenever the action does: the same `if`, or one that runs on anything but a
+        // cancel (a `failure()` step's included).
+        const cond = (step) => step.match(/^ {8}if: (.*)$/m)?.[1];
+        assert.equal(cond(steps[lastTools - 1]), cond(steps[lastTools]), `${f}: the removal and the fresh checkout run together`);
+        assert.ok([cond(s), "${{ !cancelled() }}"].includes(cond(steps[lastTools])),
+          `${f}: the fresh checkout must run whenever ${m[1]} does`);
+      }
+    }
+    for (const s of steps.filter(isTools)) {
+      assert.match(s, /sparse-checkout: actions\/\n\s*sparse-checkout-cone-mode: false\n/, `${f}: the actions checkout must hold actions/ only`);
+      assert.match(s, /persist-credentials: false/, `${f}: nothing pushes from the actions checkout`);
     }
   }
-  // Or a change to the `run: |` spelling silently reduces this to a test of nothing.
-  assert.ok(checked >= 2, `expected at least 2 run blocks across the workflows, found ${checked}`);
+  assert.deepEqual([...used].sort(), [...ACTIONS].sort(), "every action under actions/ is used by a workflow");
+  for (const a of ACTIONS) {
+    assert.match(readWorkflow(`${ACTIONS_DIR}${a}/action.yml`), /^ {4}- (?:id: run\n {6})?shell: bash\n[\s\S]*^ {6}run: bash "\$GITHUB_ACTION_PATH\/run\.sh"$/m,
+      `${a}: the action must run its run.sh under bash`);
+    const script = actionScript(a);
+    assert.match(script, /^set -eo pipefail$/m, `${a}: a script run as a file gets no -e or pipefail from the runner`);
+    assert.doesNotMatch(script, /\$\{\{/, `${a}: values reach the script through env, never an expression`);
+  }
 });
 
 // `use_sticky_comment` delivers every round through ONE comment, so each round overwrites the
@@ -379,7 +445,7 @@ test("no Claude workflow grants a wildcard rule for an unreviewed program", () =
 // without it the allowlist is the sole thing between an injected instruction in the diff
 // and a commit. `actions: read` must survive alongside it or mcp__github_ci__* goes away.
 test("the review workflow mints Claude's token without contents: write", () => {
-  const src = readWorkflow(".github/workflows/reusable-claude-code-review.yml");
+  const src = readWorkflow(".github/workflows/review.yml");
   // [\w-]+ because the action accepts hyphenated keys (`pull-requests: read`), and the
   // value is cut at a trailing `#` so an inline comment does not end up in it.
   const m = src.match(/additional_permissions: \|\n((?:\s+[\w-]+:[^\n]*\n)+)/);
@@ -409,7 +475,7 @@ test("the review workflow mints Claude's token without contents: write", () => {
 // hazard is concrete: these two workflows are maintained as a hand-copied pair, and claude.yml's
 // list BEGINS with the inline-comment tool, which is one careless paste away.
 test("the reviewer holds no tool that writes to the PR", () => {
-  const rules = allowedTools(readWorkflow(".github/workflows/reusable-claude-code-review.yml"));
+  const rules = allowedTools(readWorkflow(".github/workflows/review.yml"));
   for (const banned of [
     "mcp__github_inline_comment__create_inline_comment", // committable suggestions: claude.yml only
     "Bash(gh pr comment:*)",                             // a second comment the verify step cannot see
@@ -418,13 +484,13 @@ test("the reviewer holds no tool that writes to the PR", () => {
       `the review prompt promises ${banned} is not granted, but the allowlist grants it`);
   }
   // The other half of the pair keeps it, deliberately — that is where a blocked edit goes back.
-  const tag = allowedTools(readWorkflow(".github/workflows/reusable-claude.yml"));
+  const tag = allowedTools(readWorkflow(".github/workflows/tag.yml"));
   assert.ok(tag.includes("mcp__github_inline_comment__create_inline_comment"),
     "claude.yml must keep the inline-comment tool: its prompt tells it to post suggestions");
 });
 
 test("the review allowlist covers the tools the review dimensions reach for", () => {
-  const rules = allowedTools(readWorkflow(".github/workflows/reusable-claude-code-review.yml"));
+  const rules = allowedTools(readWorkflow(".github/workflows/review.yml"));
   for (const needed of [
     "Bash(gh pr view:*)", "Bash(gh pr diff:*)", "Bash(gh pr list:*)",
     "Bash(gh issue view:*)", "Bash(gh issue list:*)", "Bash(gh search:*)", "Bash(git blame:*)",
@@ -456,7 +522,7 @@ const RESTORED_PATHS = [".claude", ".mcp.json", ".claude.json", ".gitmodules", "
                         "CLAUDE.md", "CLAUDE.local.md", ".husky"];
 
 test("the review prompt tells the reviewer the config paths it sees are the base branch's", () => {
-  const src = promptBlock(readWorkflow(".github/workflows/reusable-claude-code-review.yml"));
+  const src = promptBlock(readWorkflow(".github/workflows/review.yml"));
   assert.ok(
     src.includes(".claude-pr/"),
     "the prompt must name .claude-pr/ — it is where the action preserves the PR's real versions",
@@ -497,7 +563,7 @@ test("the review prompt tells the reviewer the config paths it sees are the base
 // --allowedTools — so if the prompt does not hand one over, the reviewer reaches the same dead
 // end the DELETED guidance exists to remove, one step later.
 test("the review prompt supplies the base sha it tells the reviewer to use", () => {
-  const src = promptBlock(readWorkflow(".github/workflows/reusable-claude-code-review.yml"));
+  const src = promptBlock(readWorkflow(".github/workflows/review.yml"));
   assert.match(src, /BASE SHA: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/,
     "the prompt names a base sha route but never supplies the value");
 });
@@ -507,8 +573,8 @@ test("the review prompt supplies the base sha it tells the reviewer to use", () 
 // path, the test forces the prompt to be updated and says nothing about the shell list — so the
 // warning silently under-reports with nothing red. Derive one from the other instead.
 test("the sensitive-path warning step lists exactly the paths the prompt names", () => {
-  const src = readWorkflow(".github/workflows/reusable-claude-code-review.yml");
-  const m = src.match(/^ +sensitive="([^"]*)"/m);
+  const src = readWorkflow(".github/workflows/review.yml");
+  const m = actionScript("review-sensitive-paths").match(/^sensitive="([^"]*)"/m);
   assert.ok(m, "no `sensitive=` list in the warning step");
   const shell = m[1].split(/\s+/).filter(Boolean).sort();
   const prompt = promptBlock(src);
@@ -542,7 +608,7 @@ test("the sensitive-path warning step lists exactly the paths the prompt names",
 // the suite reports 250 where a local run reports 255. A reviewer comparing the two reads a
 // five-test gap as tests that vanished with the diff.
 test("the review prompt warns that a CI suite count can be lower than a local one", () => {
-  const src = promptBlock(readWorkflow(".github/workflows/reusable-claude-code-review.yml"));
+  const src = promptBlock(readWorkflow(".github/workflows/review.yml"));
   assert.match(
     src,
     /optional interpreter/,
@@ -553,7 +619,7 @@ test("the review prompt warns that a CI suite count can be lower than a local on
 // #609: the reviewer spent a turn on `node --test <file>`, which no rule grants, for a file the
 // granted `npm test` already ran. The prompt names the granted runners so it reaches for those.
 test("the review prompt names the granted test runners", () => {
-  const src = collapsed(promptBlock(readWorkflow(".github/workflows/reusable-claude-code-review.yml")));
+  const src = collapsed(promptBlock(readWorkflow(".github/workflows/review.yml")));
   assert.match(src, /Run tests only through the runners your tool list grants/,
     "without it the reviewer tries an ungranted runner and reports the file unrunnable");
   for (const runner of ["`npm test`", "`npm run test…`", "`yarn test`", "`yarn run test…`", "`node tests/<file>`"]) {
@@ -570,7 +636,7 @@ test("the review prompt names the granted test runners", () => {
 // allow rule or hook lifts it (probed on CLI 2.1.301), so the prompt routes it to the hand-back.
 test("the tag-mode prompt sends protected-path edits to the hand-back", () => {
   // The system prompt, not the file: a copy in a YAML comment instructs nothing.
-  const src = readWorkflow(".github/workflows/reusable-claude.yml").match(/--append-system-prompt "([^"]*)"/)?.[1] ?? "";
+  const src = readWorkflow(".github/workflows/tag.yml").match(/--append-system-prompt "([^"]*)"/)?.[1] ?? "";
   assert.match(src, /PROTECTED PATHS ARE NOT WRITABLE IN THIS RUN/,
     "without it the run burns turns on writes Claude Code always refuses in CI");
   assert.match(src, /except \.claude\/worktrees\/ and Markdown under \.claude\/agent-memory\//,
@@ -588,7 +654,7 @@ test("the tag-mode prompt sends protected-path edits to the hand-back", () => {
 // prompt never names. NOT the cause of #98 (base had not moved, so the merge tree equalled the
 // head tree), but a real divergence for any PR that has not merged base in.
 test("the review workflow checks out the PR head sha, not the merge ref", () => {
-  const src = readWorkflow(".github/workflows/reusable-claude-code-review.yml");
+  const src = readWorkflow(".github/workflows/review.yml");
   assert.match(src, /ref: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/,
     "without an explicit ref the tree is refs/pull/N/merge, not the reviewed commit");
   assert.match(src, /fetch-depth: 0/,
@@ -605,7 +671,7 @@ test("the review workflow checks out the PR head sha, not the merge ref", () => 
 test("no gh api call in a workflow adds a parameter, which would flip it to POST", () => {
   // The auto-merge gate too (defined below): its reads are all GETs, and a `-f since=…` there
   // would POST to the comments endpoint and create nothing but a 404 and a gate-error stop.
-  for (const wf of [...WORKFLOWS, ".github/workflows/reusable-claude-auto-merge.yml", ".github/workflows/reusable-claude-review-fix.yml"]) {
+  for (const wf of [...REUSABLE.map((f) => REUSABLE_DIR + f), ...ACTIONS.map((a) => `${ACTIONS_DIR}${a}/run.sh`)]) {
     for (const line of readWorkflow(wf).split("\n")) {
       if (!line.includes("gh api")) continue;
       assert.doesNotMatch(
@@ -633,14 +699,15 @@ const runAwk = (prog, input) => {
   assert.equal(r.status, 0, `awk failed: ${r.stderr}`);
   return r.stdout.split("\n").filter((l) => l.trim() !== "");
 };
-const GATE_WF = ".github/workflows/reusable-claude-code-review.yml";
+const GATE_WF = ".github/workflows/review.yml";
+const verifyScript = () => actionScript("review-verify");
 const unchecked = (lines) => lines.filter((l) => /^\s*[-*+] \[ \]/.test(l));
 
 test("the completion gate counts checklist items separated by prose (#102)", () => {
   // The regression itself. Before the fix `block` was one line and `pending` was 0, so this
   // review — two of its four tasks unfinished — was reported as complete.
   const body = ["### Review checklist", "- [x] a", "commentary the model put mid-list", "- [ ] b", "- [ ] c"].join("\n");
-  const block = runAwk(awkProgram(readWorkflow(GATE_WF), "block"), body);
+  const block = runAwk(awkProgram(verifyScript(), "block"), body);
   assert.equal(block.length, 3, `all three items must be in the tracker, got:\n${block.join("\n")}`);
   assert.equal(unchecked(block).length, 2, "both unfinished items must be counted, so the round fails");
 });
@@ -651,7 +718,7 @@ test("a heading ends the tracker, so follow-ups below it never fail a finished r
   const body = [
     "### Review checklist", "- [x] a", "- [x] b", "", "### Findings", "Some prose.", "Follow-ups:", "- [ ] later thing",
   ].join("\n");
-  const src = readWorkflow(GATE_WF);
+  const src = verifyScript();
   const block = runAwk(awkProgram(src, "block"), body);
   assert.equal(block.length, 2, `the tracker stops at the heading, got:\n${block.join("\n")}`);
   assert.equal(unchecked(block).length, 0, "a finished review must not be reported UNREVIEWED");
@@ -663,7 +730,7 @@ test("a heading ends the tracker, so follow-ups below it never fail a finished r
 test("nothing trails a review whose checklist is the only checkbox list", () => {
   // Or the warning fires on every ordinary review and stops meaning anything.
   const body = ["### Review checklist", "- [x] a", "- [x] b", "", "### Findings", "No issues."].join("\n");
-  assert.deepEqual(runAwk(awkProgram(readWorkflow(GATE_WF), "trailing"), body), []);
+  assert.deepEqual(runAwk(awkProgram(verifyScript(), "trailing"), body), []);
 });
 
 test("a # inside a code fence, or a shebang, does not end the tracker", () => {
@@ -671,7 +738,7 @@ test("a # inside a code fence, or a shebang, does not end the tracker", () => {
   // quoting a diff writes `# comment` inside a fence and `#!/bin/sh`, and `^[[:space:]]*#`
   // matched both — items below went uncounted again. Caught by probing the shipped program,
   // not by reading it, which is why these fixtures exist rather than a comment.
-  const src = readWorkflow(GATE_WF);
+  const src = verifyScript();
   const prog = awkProgram(src, "block");
   const fenced = ["### Review checklist", "- [x] a", "```sh", "# rebuild the thing", "```", "- [ ] b", "- [ ] c"];
   assert.equal(runAwk(prog, fenced.join("\n")).length, 3, "a fenced # comment must not terminate the tracker");
@@ -688,7 +755,7 @@ test("a # inside a code fence, or a shebang, does not end the tracker", () => {
 // nothing, and a rule citation shipped at 75 with no likelihood check. The plugin half of the
 // same fix is pinned in plugins.test.mjs.
 test("the review prompt requires a scenario and settles a reasoned decline", () => {
-  const src = collapsed(promptBlock(readWorkflow(".github/workflows/reusable-claude-code-review.yml")));
+  const src = collapsed(promptBlock(readWorkflow(".github/workflows/review.yml")));
   assert.match(src, /EVERY RUNTIME-DEFECT FINDING AT 75\+ NAMES ITS SCENARIO/);
   assert.match(src, /A finding that is wrong ON PAPER needs no scenario/,
     "a spec contradiction has no runtime input; capping it at 25 would let a contradictory spec merge");
@@ -715,7 +782,7 @@ test("the review prompt names decisions.md (35 · Req 4.6)", () => {
 // both directions — a kind added to either side without the other goes red.
 crossRepo("the review prompt's round rules agree with watch-pr's Scoring a round", () => {
   const norm = (s) => s.replace(/\*/g, "").replace(/\s+/g, " ").toLowerCase();
-  const bot = norm(promptBlock(readWorkflow(".github/workflows/reusable-claude-code-review.yml")));
+  const bot = norm(promptBlock(readWorkflow(".github/workflows/review.yml")));
   const watchSrc = specWorkflowFile("claude/plugins/spec-workflow/skills/watch-pr/SKILL.md");
   const section = watchSrc.split("## Scoring a round")[1]?.split("\n## ")[0];
   assert.ok(section, "watch-pr lost its `## Scoring a round` section — this test parses it");
@@ -744,16 +811,12 @@ crossRepo("the review prompt's round rules agree with watch-pr's Scoring a round
 });
 
 // The merge workflow is not a Claude workflow (no action step, no allowlist), so it stays out of
-// WORKFLOWS. It ships as a TEMPLATE only: this repo does not run it — `claude-setup github`
-// installs it where auto-merge is turned on. What it must hold: it runs the DEFAULT branch's copy
+// WORKFLOWS. This repo does not run it (no auto-merge caller here) — `claude-setup github`
+// installs `callers/claude-auto-merge.yml` where auto-merge is turned on. What it must hold: it runs the DEFAULT branch's copy
 // (workflow_run), it listens to the review workflow by its exact name and pins its path, and
 // its two parsers — the sensitive-path matcher and the verdict counter — answer correctly.
-const MERGE_WORKFLOW = ".github/workflows/reusable-claude-auto-merge.yml";
-const mergeScript = () => {
-  const blocks = runBlocks(readWorkflow(MERGE_WORKFLOW));
-  assert.equal(blocks.length, 1, "the merge workflow has one run block");
-  return blocks[0];
-};
+const MERGE_WORKFLOW = ".github/workflows/auto-merge.yml";
+const mergeScript = () => actionScript("auto-merge");
 const shellVar = (script, name) => {
   const m = new RegExp(`^${name}='\\n([\\s\\S]*?)'$`, "m").exec(script);
   assert.ok(m, `could not extract ${name} — its spelling in the merge workflow changed`);
@@ -765,13 +828,17 @@ test("the merge workflow is valid shell", () => {
   assert.equal(r.status, 0, `the merge workflow's run block is not valid shell\n${r.stderr}`);
 });
 
-// The caller's `on: workflow_run` of the review by name is pinned in claude-setup.
+// The caller's `on: workflow_run` of the review by name is pinned in callers.test.mjs.
 test("the merge workflow pins the review workflow's path and merges only the reviewed commit", () => {
   const src = readWorkflow(MERGE_WORKFLOW);
   assert.match(src, /workflow_run\.path == '\.github\/workflows\/claude-code-review\.yml'/,
     "a name is claimable by any workflow, so the path must be pinned too");
-  assert.match(src, /--match-head-commit "\$HEAD_SHA"/, "merge only the reviewed commit");
-  assert.doesNotMatch(src, /actions\/checkout/, "never check out PR code in a job holding a write token");
+  assert.match(mergeScript(), /--match-head-commit "\$HEAD_SHA"/, "merge only the reviewed commit");
+  // Its one checkout is this repo's actions, at the gate's own commit — never PR code.
+  const checkouts = stepBlocks(src).filter((s) => /uses: actions\/checkout@/.test(s));
+  assert.equal(checkouts.length, 1, "the gate checks out its own actions and nothing else");
+  assert.match(checkouts[0], /repository: \$\{\{ job\.workflow_repository \}\}\n\s*ref: \$\{\{ job\.workflow_sha \}\}/,
+    "never check out PR code in a job holding a write token");
 });
 
 test("the merge workflow's sensitive-path matcher", () => {
@@ -853,7 +920,7 @@ test("the merge workflow reads exactly one verdict, outside code fences", () => 
 // line `watch-pr` reads. The live copy carries both too since #383 (byte-identical, above).
 // The verdict grammar is the GATE's, extracted from its `VERDICT_AWK`, never retyped here: a
 // prompt that teaches one spelling while the gate parses another merges nothing, silently.
-const REVIEW_TEMPLATE = ".github/workflows/reusable-claude-code-review.yml";
+const REVIEW_TEMPLATE = ".github/workflows/review.yml";
 const gateVerdictRe = () => {
   const m = shellVar(mergeScript(), "VERDICT_AWK").match(/!fence && \/(\^VERDICT: [^/]*\$)\/ \{ print \}/);
   assert.ok(m, "could not extract the verdict regex from VERDICT_AWK — its spelling changed");
@@ -912,24 +979,29 @@ test("the review prompt writes no verdict until its final update", () => {
 // A review that ticked its checklist but never made the final update leaves no verdict; the
 // verify step fails that round itself, with the gate's own program so the two cannot disagree.
 test("the verify step fails a finished checklist with no verdict line, by the gate's program", () => {
-  const prog = awkProgram(readWorkflow(GATE_WF), "verdicts");
+  const prog = awkProgram(verifyScript(), "verdicts");
   const norm = (s) => s.split("\n").map((l) => l.trim()).filter(Boolean).join("\n");
   assert.equal(norm(prog), norm(shellVar(mergeScript(), "VERDICT_AWK")), "the verify step's verdict program must be the gate's VERDICT_AWK");
   const placeholder = ["Round 1 of 3 · Reviewing…", "", "### Review checklist", "- [x] a", "- [x] b"].join("\n");
   assert.deepEqual(runAwk(prog, placeholder), [], "an in-progress comment holds no verdict");
-  assert.match(readWorkflow(GATE_WF), /if \[ "\$nverdicts" -eq 0 \]; then\n\s*echo "::error::[^"]*UNREVIEWED[^"]*"\n\s*exit 1/);
-  assert.match(readWorkflow(GATE_WF), /if \[ "\$nverdicts" -ne 1 \]; then\n\s*echo "::error::[^"]*UNREVIEWED[^"]*"\n\s*exit 1/);
+  assert.match(verifyScript(), /if \[ "\$nverdicts" -eq 0 \]; then\n\s*echo "::error::[^"]*UNREVIEWED[^"]*"\n\s*exit 1/);
+  assert.match(verifyScript(), /if \[ "\$nverdicts" -ne 1 \]; then\n\s*echo "::error::[^"]*UNREVIEWED[^"]*"\n\s*exit 1/);
 });
 
 // The verdict and status checks run as shipped, from the verdict count to the success echo, so a
 // comment that keeps `Reviewing…`, repeats or malforms the status line, or disagrees with the
 // comment's verdict line fails the round (#490) — and a good one passes.
 test("the verify step requires one status line matching the round and the verdict (#490)", () => {
-  const src = readWorkflow(GATE_WF);
-  // The run below injects the numbers, so the step's env must really carry the round step's.
-  assert.match(src, /\n\s*ROUND_N: \$\{\{ steps\.round\.outputs\.n \}\}\n\s*ROUND_BUDGET: \$\{\{ steps\.round\.outputs\.budget \}\}\n/);
-  assert.match(src, /\n\s*id: round\n/);
-  assert.match(src, /echo "n=\$n" >> "\$GITHUB_OUTPUT"\n\s*echo "budget=\$budget" >> "\$GITHUB_OUTPUT"/);
+  const wf = readWorkflow(GATE_WF);
+  const src = verifyScript();
+  // The run below injects the numbers, so the step must really carry the round step's, through to
+  // the script's env.
+  assert.match(wf, /\n\s*round-n: \$\{\{ steps\.round\.outputs\.n \}\}\n\s*round-budget: \$\{\{ steps\.round\.outputs\.budget \}\}\n/);
+  assert.match(actionYml("review-verify"), /\n\s*ROUND_N: \$\{\{ inputs\.round-n \}\}\n\s*ROUND_BUDGET: \$\{\{ inputs\.round-budget \}\}\n/);
+  assert.match(wf, /\n\s*id: round\n/);
+  assert.match(actionScript("review-round"), /echo "n=\$n" >> "\$GITHUB_OUTPUT"\n\s*echo "budget=\$budget" >> "\$GITHUB_OUTPUT"/);
+  assert.match(actionYml("review-round"), /value: \$\{\{ steps\.run\.outputs\.n \}\}[\s\S]*value: \$\{\{ steps\.run\.outputs\.budget \}\}/,
+    "the action passes the script's outputs on");
   const m = /\n(\s*verdicts=\$\(printf[\s\S]*?\n\s*echo "Review completed:[^\n]*)\n/.exec(src);
   assert.ok(m, "could not extract the verify step's verdict and status checks — their spelling changed");
   const run = (lines) => spawnSync("bash", ["-c", m[1]], {
@@ -967,7 +1039,7 @@ test("the verify step requires one status line matching the round and the verdic
     }
   }
   // The prompt keeps every other `Round <n> of <b> · ` line inside a fence, since the pass counts them.
-  assert.match(collapsed(promptBlock(src)), /status line is the only line outside a code fence that starts `Round <n> of <b> · ` \(only a ``` fence counts; a ~~~ fence is not read as one\)/);
+  assert.match(collapsed(promptBlock(wf)), /status line is the only line outside a code fence that starts `Round <n> of <b> · ` \(only a ``` fence counts; a ~~~ fence is not read as one\)/);
 });
 
 test("the review prompt ends on one verdict line in the gate's exact grammar (Req 1.2)", () => {
@@ -993,13 +1065,14 @@ test("the round step runs before the review and counts this PR's uncancelled run
   const step = stepWithId(src, "round");
   assert.ok(step, "no step with id: round");
   assert.ok(src.indexOf(step) < src.indexOf(stepWithId(src, "review")), "the round step must run before the review");
-  const [script] = runBlocks(step);
-  assert.ok(script, "the round step has no run block");
+  assert.match(step, /uses: \.\/\.fixdings-actions\/actions\/review-round\n/);
+  const script = actionScript("review-round");
   assert.doesNotMatch(script, /\$\{\{/, "values reach the shell through env, never interpolated into run:");
   assert.match(script, /gh run list/);
   assert.match(script, /--limit \d+/, "gh run list defaults to 20 runs — a long PR would undercount");
   assert.match(script, /--event pull_request/);
-  assert.match(step, /BUDGET: \$\{\{ inputs\.round-budget \}\}/);
+  assert.match(step, /budget: \$\{\{ inputs\.round-budget \}\}/);
+  assert.match(actionYml("review-round"), /BUDGET: \$\{\{ inputs\.budget \}\}/);
 
   // Run it against a fake `gh` that answers with a fixture through real jq, as gh's --jq would.
   const dir = mkdtempSync(join(tmpdir(), "round-"));
@@ -1072,7 +1145,7 @@ const runFn = (fnSrc, call, env) => {
 const decideFn = () => `${shellFn(mergeScript(), "claude_exception")}\n${shellFn(mergeScript(), "decide")}`;
 // A PR the gate merges: every fact as the reads report it for a clean, unmoved, insider PR.
 const CLEAN_FACTS = {
-  CLAUDE_BOT: /^CLAUDE_BOT='([^']*)'$/m.exec(mergeScript())?.[1],
+  CLAUDE_BOT: /^CLAUDE_BOT='([^']*)'$/m.exec(readWorkflow(`${ACTIONS_DIR}lib/run-comment.sh`))?.[1],
   failed: "", pr_state: "open", pr_draft: "false", pr_head: "abc", pr_base: "main", author: "MEMBER",
   wf_changed: "", nfiles: "1", pr_files: "1", hits: "", changes: "0", verdicts: "VERDICT: CLEAN",
   HEAD_SHA: "abc", DEFAULT_BRANCH: "main", RUN_CONCLUSION: "success", is_land: "", members: "",
@@ -1089,7 +1162,7 @@ test("the gate admits a failed review run, still pinned to the review workflow (
   }
   assert.doesNotMatch(src, /^\s+actions: write/m,"the gate never re-runs a review — the user does (Req 2.10)");
   assert.match(src, /^ {6}actions: read$/m, "`gh pr checks` reads each check's workflow run — without `actions: read` it fails (#366)");
-  assert.match(src, /RUN_CONCLUSION: \$\{\{ github\.event\.workflow_run\.conclusion \}\}/);
+  assert.match(actionYml("auto-merge"), /RUN_CONCLUSION: \$\{\{ github\.event\.workflow_run\.conclusion \}\}/);
 });
 
 // Accepted, and written down where the merge happens: a merge made with GITHUB_TOKEN creates no
@@ -1270,8 +1343,72 @@ test("every gh read in the gate is checked, and the comment read pages from run_
       `this gh read is unchecked, so a failure kills the job under bash -e instead of stopping gate-error:\n    ${line.trim()}`);
   }
   // The issue-comments endpoint ignores sort/direction, so one unpaged read is the OLDEST 100.
-  assert.match(script, /gh api --paginate "repos\/\$GH_REPO\/issues\/\$PR\/comments\?per_page=100&since=\$RUN_STARTED_AT"/);
+  const lib = readWorkflow(`${ACTIONS_DIR}lib/run-comment.sh`);
+  assert.match(lib, /gh api --paginate "repos\/\$1\/issues\/\$2\/comments\?per_page=100\$\{4:\+&since=\$4\}"/);
+  assert.match(script, /comment=\$\(run_comment "\$GH_REPO" "\$PR" "\$RUN_ID" "\$RUN_STARTED_AT"\) \|\| fail review-comment/,
+    "the gate reads the comment from the run's start, and a failed read is a gate-error stop");
+  assert.doesNotMatch(lib + script, /sort=created|direction=desc/, "the endpoint ignores them; they only suggest an order it never gives");
+});
+
+// The gate, the fixer and the verify step must pick the same tracking comment for one run, so the
+// selection lives once, in actions/lib/run-comment.sh — a copy that drifted is how the verify step
+// came to read the oldest 100 comments while the gate paged them.
+test("the three readers of a review's tracking comment share one selection", () => {
+  for (const a of ["auto-merge", "review-fix-round", "review-verify"]) {
+    const src = actionScript(a);
+    assert.match(src, /^\. "\$GITHUB_ACTION_PATH\/\.\.\/lib\/run-comment\.sh"$/m, `${a}: sources the shared selection`);
+    assert.match(src, /\brun_comment "/, `${a}: calls it`);
+    assert.doesNotMatch(src, /issues\/\$PR\/comments/, `${a}: reads the comments itself — a second copy of the selection`);
+  }
+  for (const a of ACTIONS) {
+    assert.doesNotMatch(actionScript(a), /gh label create/, `${a}: creates the needs-human label itself — use label_needs_human`);
+  }
+});
+
+// The verify step reads the same endpoint, and read it as one `sort=created&direction=desc` page —
+// which the endpoint ignores, so a PR past 100 comments never showed it this run's comment and
+// every round failed UNREVIEWED. Run end to end against a fake gh that answers only the URLs the
+// gate's read uses, with this run's comment past the first 100.
+test("the verify step pages the PR's comments from the attempt's start, as the gate does", () => {
+  const script = verifyScript();
+  assert.ok(script, "could not find the verify step's run block");
   assert.doesNotMatch(script, /sort=created|direction=desc/, "the endpoint ignores them; they only suggest an order it never gives");
+  const STARTED = "2026-10-06T10:00:00Z";
+  const old = Array.from({ length: 150 }, (_, i) => ({ id: i + 1, user: { login: "someone" }, created_at: "2026-10-01T00:00:00Z", body: "hi" }));
+  const mine = { id: 500, user: { login: "claude[bot]" }, created_at: "2026-10-06T10:00:05Z",
+    body: "Claude finished [View job](https://github.com/o/r/actions/runs/99)\n\nRound 2 of 3 · VERDICT: CLEAN\n\n### Review checklist\n- [x] read the diff\n\nVERDICT: CLEAN" };
+  const fakeGh = [
+    "#!/bin/sh",
+    'shift; jq=""; url=""',
+    'while [ $# -gt 0 ]; do case "$1" in --paginate) ;; --jq) jq=$2; shift ;; *) url=$1 ;; esac; shift; done',
+    "f=\"$FAKE_DIR/api/$(printf '%s' \"$url\" | tr -c 'A-Za-z0-9' '_')\"",
+    '[ -f "$f" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }',
+    'if [ -n "$jq" ]; then exec jq -r "$jq" "$f"; else cat "$f"; fi',
+  ].join("\n");
+  const verify = (fixtures) => {
+    const dir = mkdtempSync(join(tmpdir(), "verify-"));
+    try {
+      writeFileSync(join(dir, "gh"), fakeGh);
+      chmodSync(join(dir, "gh"), 0o755);
+      mkdirSync(join(dir, "api"));
+      for (const [url, v] of Object.entries(fixtures)) writeFileSync(join(dir, "api", url.replace(/[^A-Za-z0-9]/g, "_")), JSON.stringify(v));
+      return spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail"], {
+        input: script, encoding: "utf8", cwd: dir,
+        env: { PATH: `${dir}:${process.env.PATH}`, FAKE_DIR: dir, GITHUB_ACTION_PATH: actionPath("review-verify"), GH_TOKEN: "x", REPO: "o/r", PR: "7", RUN_ID: "99",
+          REVIEW_OUTCOME: "success", GITHUB_WORKFLOW_REF: "o/r/.github/workflows/claude-code-review.yml@refs/pull/7/merge",
+          EXECUTION_FILE: "", ROUND_N: "2", ROUND_BUDGET: "3" },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const ok = verify({ "repos/o/r/actions/runs/99": { run_started_at: STARTED },
+    [`repos/o/r/issues/7/comments?per_page=100&since=${STARTED}`]: [mine] });
+  assert.equal(ok.status, 0, `a finished review must pass:\n${ok.stdout}${ok.stderr}`);
+  // No start time: every page, unfiltered — the comment past the first 100 is still found.
+  const unread = verify({ "repos/o/r/issues/7/comments?per_page=100": [...old, mine] });
+  assert.equal(unread.status, 0, `with no start time every page is read:\n${unread.stdout}${unread.stderr}`);
+  assert.match(unread.stdout, /::warning::Could not read run 99's start time/);
 });
 
 // The whole run block end to end, against a fake `gh` answering from fixture files: what the
@@ -1355,7 +1492,7 @@ test("the gate end to end against a fake gh (Req 2.8, 2.10, 2.12)", () => {
       const r = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail"], {
         input: script, encoding: "utf8", cwd: dir,
         env: {
-          PATH: `${dir}:${process.env.PATH}`, FAKE_DIR: dir, TMPDIR: dir, GH_TOKEN: "x", GH_REPO: "o/r", PR: "7",
+          PATH: `${dir}:${process.env.PATH}`, FAKE_DIR: dir, GITHUB_ACTION_PATH: actionPath("auto-merge"), TMPDIR: dir, GH_TOKEN: "x", GH_REPO: "o/r", PR: "7",
           HEAD_SHA: "abc", RUN_ID: "99", RUN_STARTED_AT: STARTED, RUN_CONCLUSION: conclusion, REVIEW_WORKFLOW: WF,
           DEFAULT_BRANCH: "main", REVIEW_SENSITIVE_PATHS: sensitive, GITHUB_SERVER_URL: "https://github.com", GITHUB_RUN_ID: "123",
           FAKE_CHECKS: checks, FAKE_CHECKS_JSON: typeof checksJson === "string" ? checksJson : JSON.stringify(checksJson), FAKE_CHECKS_FAIL: checksFail,
@@ -1610,12 +1747,13 @@ test("the gate end to end against a fake gh (Req 2.8, 2.10, 2.12)", () => {
 // The review fixer: agent mode on `workflow_run`, so it is not in WORKFLOWS (track_progress is
 // tag-mode only and the action refuses it on this event). It must act on Claude's own PRs and
 // nothing else, and hand the PR to a person once the review budget is spent.
-const FIX_WORKFLOW = ".github/workflows/reusable-claude-review-fix.yml";
-// Run blocks in step order: the round step, the PR-body refresh, then the hand-off to a person.
+const FIX_WORKFLOW = ".github/workflows/review-fix.yml";
+// In step order: the round step and the hand-off to a person are actions; the PR-body refresh is
+// the workflow's one run block.
 const fixBlocks = () => {
   const blocks = runBlocks(readWorkflow(FIX_WORKFLOW));
-  assert.equal(blocks.length, 3, "the fix workflow has three run blocks");
-  return blocks;
+  assert.equal(blocks.length, 1, "the fix workflow has one run block, the PR-body refresh");
+  return [actionScript("review-fix-round"), blocks[0], actionScript("review-fix-handoff")];
 };
 const fixScript = () => fixBlocks()[0];
 
@@ -1677,7 +1815,7 @@ test("only claude.yml asks for workflows: write; the fixer hands a workflow chan
       if (content !== undefined) writeFileSync(join(dir, "claude-review-fix-handoff.md"), content);
       const r = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail"], {
         input: handoff, encoding: "utf8", cwd: dir,
-        env: { PATH: `${dir}:${process.env.PATH}`, FAKE_DIR: dir, TMPDIR: dir, PR: "7", HANDOFF: "claude-review-fix-handoff.md",
+        env: { PATH: `${dir}:${process.env.PATH}`, FAKE_DIR: dir, GITHUB_ACTION_PATH: actionPath("review-fix-handoff"), TMPDIR: dir, PR: "7", HANDOFF: "claude-review-fix-handoff.md",
           GH_REPO: "o/r", HEAD_SHA: "abc", ROUND: "2", FAKE_HEAD: head, GITHUB_SERVER_URL: "https://github.com", GITHUB_RUN_ID: "5" },
       });
       const read = (f) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : "");
@@ -1702,15 +1840,18 @@ test("only claude.yml asks for workflows: write; the fixer hands a workflow chan
   assert.ok(given.labels, "and the PR is labelled needs-human");
 });
 
-// The caller's `on: workflow_run` by name and its `cancel-in-progress: false` are pinned in claude-setup.
+// The caller's `on: workflow_run` by name and its `cancel-in-progress: false` are pinned in callers.test.mjs.
 test("the fix workflow runs only for claude/ branches, checking out after the author check", () => {
   const src = readWorkflow(FIX_WORKFLOW);
   assert.match(src, /workflow_run\.path == '\.github\/workflows\/claude-code-review\.yml'/, "the review's path is pinned");
   assert.match(src, /startsWith\(github\.event\.workflow_run\.head_branch, 'claude\/'\)/, "claude/ branches only");
   const steps = stepBlocks(src);
   const at = (re) => steps.findIndex((s) => re.test(s));
-  assert.ok(at(/id: round/) < at(/actions\/checkout/), "the PR head is checked out only after the round step vets it");
-  for (const s of steps.filter((s) => /actions\/checkout|claude-code-action/.test(s))) {
+  // The PR checkout, told apart from the checkout of this repo's actions by its ref.
+  const prCheckout = /uses: actions\/checkout@[^\n]*\n\s*with:\n\s*ref: \$\{\{ github\.event\.workflow_run\.head_sha \}\}/;
+  assert.ok(at(prCheckout) !== -1, "no PR checkout found — its spelling changed");
+  assert.ok(at(/id: round/) < at(prCheckout), "the PR head is checked out only after the round step vets it");
+  for (const s of steps.filter((s) => prCheckout.test(s) || /claude-code-action/.test(s))) {
     assert.match(s, /if: steps\.round\.outputs\.fix == 'yes'/, "checkout and Claude run only when the round step says fix");
   }
   assert.match(src, /CLAUDE_BRANCH: \$\{\{ github\.event\.workflow_run\.head_branch \}\}/, "commits land on the PR's branch");
@@ -1762,7 +1903,7 @@ test("the fix workflow's round step end to end against a fake gh", () => {
       writeFileSync(out, "");
       const r = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail"], {
         input: script, encoding: "utf8", cwd: dir,
-        env: { PATH: `${dir}:${process.env.PATH}`, FAKE_DIR: dir, TMPDIR: dir, RUNNER_TEMP: dir, GITHUB_OUTPUT: out,
+        env: { PATH: `${dir}:${process.env.PATH}`, FAKE_DIR: dir, GITHUB_ACTION_PATH: actionPath("review-fix-round"), TMPDIR: dir, RUNNER_TEMP: dir, GITHUB_OUTPUT: out,
           GH_TOKEN: "x", GH_REPO: "o/r", PR: "7", HEAD_SHA: "abc", RUN_ID: "99", RUN_STARTED_AT: STARTED },
       });
       const read = (f) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : "");

@@ -1,0 +1,29 @@
+name: Count this review round
+description: Counts this PR's review rounds and resolves the round budget for the review's status line.
+inputs:
+  budget:
+    description: The caller's `vars.CLAUDE_CODE_REVIEW_ROUND_BUDGET`; empty means 3.
+    default: ""
+outputs:
+  n:
+    description: This round's number.
+    value: ${{ steps.run.outputs.n }}
+  budget:
+    description: The round budget.
+    value: ${{ steps.run.outputs.budget }}
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+        # PR-controlled text: a branch may be named `$(…)`. It reaches the shell as an env
+        # value and is only ever quoted, never interpolated into the script.
+        HEAD_REF: ${{ github.head_ref }}
+        # Runs of an earlier PR that reused this branch name are not this PR's rounds (#602).
+        PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
+        GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+        BUDGET: ${{ inputs.budget }}
+      run: bash "$GITHUB_ACTION_PATH/run.sh"
