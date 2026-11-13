@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Run by actions/review-fix-handoff/action.yml. GitHub runs a step `run:` under `bash -e` with pipefail; a
-# script invoked as a file gets neither, so it sets them itself.
+# Run by actions/review-fix-handoff/action.yml. GitHub ran an inline `run:` under `bash -e` with
+# pipefail; a script invoked as a file gets neither, so it sets them itself.
 set -eo pipefail
 # Shared with the other actions: actions/lib/, in the same sparse checkout.
 . "$GITHUB_ACTION_PATH/../lib/needs-human.sh"

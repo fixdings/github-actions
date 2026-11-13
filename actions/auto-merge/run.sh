@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Run by actions/auto-merge/action.yml. GitHub runs a step `run:` under `bash -e` with pipefail; a
-# script invoked as a file gets neither, so it sets them itself.
+# Run by actions/auto-merge/action.yml. GitHub ran an inline `run:` under `bash -e` with
+# pipefail; a script invoked as a file gets neither, so it sets them itself.
 set -eo pipefail
 # Shared with the other actions: actions/lib/, in the same sparse checkout.
 . "$GITHUB_ACTION_PATH/../lib/run-comment.sh"
@@ -11,8 +11,6 @@ set -eo pipefail
 # plain entry matches it and no exception does. The default adds the claude-code-action
 # restore set (`.mcp.json` … `.husky/`), files that run code or instruct Claude.
 sensitive="${REVIEW_SENSITIVE_PATHS:-.github/ .claude/ !.claude/specs/ CLAUDE.md CLAUDE.local.md .mcp.json .claude.json .gitmodules .ripgreprc .husky/}"
-# The login claude-code-action posts and opens PRs as.
-CLAUDE_BOT='claude[bot]'
 
 # No apostrophe inside any of these programs: each is one single-quoted shell word.
 SENSITIVE_AWK='

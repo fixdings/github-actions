@@ -137,7 +137,9 @@ test("the release step tags, moves the major and publishes, all-or-nothing, and 
     git(`clone -q ${join(dir, "origin.git")} work`, dir);
     git("commit -q --allow-empty -m 'chore: init'");
     git("tag -a v1.0.0 -m v1.0.0");
-    git("tag v1");
+    // Annotated, as a hand-made major would be: ls-remote then also lists its peeled `^{}` line,
+    // which `--refs` must keep out of the lease.
+    git("tag -a v1 -m v1");
     git("push -q origin HEAD:main refs/tags/v1.0.0 refs/tags/v1");
     git("commit -q --allow-empty -m 'fix: x'");
     const head = git("rev-parse HEAD");
@@ -145,7 +147,7 @@ test("the release step tags, moves the major and publishes, all-or-nothing, and 
 
     // v1 is not where this run last read it (someone moved it by hand): the lease refuses the
     // push, and NOTHING lands — not even the version tag.
-    const stale = releaseStep().replace('old=$(git ls-remote origin "refs/tags/$MAJOR" | cut -f1)', "old=0000000000000000000000000000000000000001");
+    const stale = releaseStep().replace('old=$(git ls-remote --refs origin "refs/tags/$MAJOR" | cut -f1)', "old=0000000000000000000000000000000000000001");
     assert.notEqual(stale, releaseStep(), "the step's lease read changed spelling — this test rewrites it");
     const blocked = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail"], {
       input: stale, cwd: work, encoding: "utf8", env: { ...env, GH_TOKEN: "x", VERSION: v.version, PREVIOUS: v.previous, MAJOR: v.major } });

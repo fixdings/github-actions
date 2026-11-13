@@ -1145,7 +1145,7 @@ const runFn = (fnSrc, call, env) => {
 const decideFn = () => `${shellFn(mergeScript(), "claude_exception")}\n${shellFn(mergeScript(), "decide")}`;
 // A PR the gate merges: every fact as the reads report it for a clean, unmoved, insider PR.
 const CLEAN_FACTS = {
-  CLAUDE_BOT: /^CLAUDE_BOT='([^']*)'$/m.exec(mergeScript())?.[1],
+  CLAUDE_BOT: /^CLAUDE_BOT='([^']*)'$/m.exec(readWorkflow(`${ACTIONS_DIR}lib/run-comment.sh`))?.[1],
   failed: "", pr_state: "open", pr_draft: "false", pr_head: "abc", pr_base: "main", author: "MEMBER",
   wf_changed: "", nfiles: "1", pr_files: "1", hits: "", changes: "0", verdicts: "VERDICT: CLEAN",
   HEAD_SHA: "abc", DEFAULT_BRANCH: "main", RUN_CONCLUSION: "success", is_land: "", members: "",

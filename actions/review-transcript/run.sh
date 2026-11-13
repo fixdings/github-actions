@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Run by actions/review-transcript/action.yml. GitHub runs a step `run:` under `bash -e` with pipefail; a
-# script invoked as a file gets neither, so it sets them itself.
+# Run by actions/review-transcript/action.yml. GitHub ran an inline `run:` under `bash -e` with
+# pipefail; a script invoked as a file gets neither, so it sets them itself.
 set -eo pipefail
 
 # Reaching here means the action DID set a path (the step `if` requires it) and the
@@ -12,7 +12,7 @@ if [ ! -f "$EXECUTION_FILE" ]; then
 fi
 # The transcript quotes the PR diff, which is contributor-controlled,
 # so stop the runner interpreting any ::workflow command:: inside it.
-# The default shell is `bash -e`: close the fence from a trap, or a jq
+# The script runs under `set -e`: close the fence from a trap, or a jq
 # that dies on a half-written transcript (the action killed mid-write
 # by cancel-in-progress, a timeout, an OOM) leaves workflow commands
 # disabled for every later step in the job.
@@ -27,10 +27,6 @@ echo "::stop-commands::$token"
 # it jq runs the filter once per top-level document, repeating the
 # header for every message. Messages are objects, so flatten only ever
 # unwraps the slurp's own outer array.
-#
-# The verdict line is the whole point of the step, so print it whole.
-# Only the transcript body below it is capped, and `tail -c` keeps the
-# END of a run — where a review that stopped early stopped.
 # ONE pass for both halves (#84). The verdict and the last assistant message came from
 # two `jq -s` runs over the same file; slurping a transcript twice to answer two
 # questions about it is the kind of thing nobody notices because the step only runs on

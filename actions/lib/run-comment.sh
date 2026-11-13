@@ -21,12 +21,15 @@
 # citing attempt 1's unchecked boxes). The bodies cannot settle it: the job link stops at the run.
 # So the boundary is GitHub's own `run_started_at`, which resets on re-run where `created_at` keeps
 # the original — any comment older than it belongs to an earlier attempt.
+# The login claude-code-action posts and opens PRs as.
+CLAUDE_BOT='claude[bot]'
+
 run_comment() {
   local comments
   comments=$(gh api --paginate "repos/$1/issues/$2/comments?per_page=100${4:+&since=$4}") || return 1
-  printf '%s' "$comments" | jq -cs --arg run "$3" --arg since "$4" '
+  printf '%s' "$comments" | jq -cs --arg run "$3" --arg since "$4" --arg bot "$CLAUDE_BOT" '
     add // []
-    | map(select((.user.login // "") == "claude[bot]" or (.user.login // "") == "github-actions[bot]"))
+    | map(select((.user.login // "") == $bot or (.user.login // "") == "github-actions[bot]"))
     | map(select((.body // "") | test("actions/runs/" + $run + "([^0-9]|$)")))
     # Both timestamps are GitHub-generated ISO-8601 UTC of fixed width, so a string compare is a
     # chronological one.

@@ -48,6 +48,11 @@ test("what breaks a caller written for the old interface", () => {
     /now needs `checks: read` \(was none\)/);
   assert.match(same(wf({ inputs: input("budget", "        type: number\n"), secrets: "      TOKEN:\n        required: true\n" })).join(),
     /input `budget` changed type \(string → number\)/, "a caller passing `${{ vars.X }}`, a string, fails a number input");
+  // A workflow-level block applies to every job, so it counts as theirs.
+  const topLevel = base.replace("jobs:\n", "permissions:\n  pull-requests: write\njobs:\n");
+  assert.notEqual(topLevel, base, "the fixture changed shape — this test rewrites it");
+  assert.match(same(topLevel).join(), /now needs `pull-requests: write` \(was none\)/);
+  assert.match(same(base.replace("jobs:\n", "permissions: write-all\njobs:\n")).join(), /`permissions: write-all` is not one entry per line/);
   // Forms the parser does not read fail closed rather than passing as "nothing needed".
   const asIs = wf({ inputs: input("budget"), secrets: "      TOKEN:\n        required: true\n" });
   for (const form of ["permissions: write-all", "permissions: { contents: write }"]) {

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Run by actions/review-round/action.yml. GitHub runs a step `run:` under `bash -e` with pipefail; a
-# script invoked as a file gets neither, so it sets them itself.
+# Run by actions/review-round/action.yml. GitHub ran an inline `run:` under `bash -e` with
+# pipefail; a script invoked as a file gets neither, so it sets them itself.
 set -eo pipefail
 
 # The workflow's own file, derived the way the verify step derives it, so a repo that

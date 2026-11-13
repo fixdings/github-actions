@@ -1,5 +1,5 @@
 // What a reusable workflow offers its callers: the inputs and secrets it declares under
-// `on.workflow_call`, and the job permissions it needs. Read by tests/callers.test.mjs and by
+// `on.workflow_call`, and the permissions its jobs need (workflow-level or per job). Read by tests/callers.test.mjs and by
 // scripts/breaking-changes.mjs. It parses the shapes this repo's workflow files use — two-space
 // YAML, one `key: value` per line — not YAML at large.
 
@@ -38,10 +38,10 @@ export function workflowInterface(src) {
   // A form this parser does not read — `permissions: write-all`, a flow-style `{ … }` — would
   // otherwise come back as an empty block and pass as "nothing needed". Named instead, so the
   // check fails closed on it.
-  const unread = [...src.matchAll(/^ {4}(inputs|secrets|permissions):[ \t]*([^\s#][^\n]*)$/gm)].map((m) => `${m[1]}: ${m[2].trim()}`);
-  // Every job's permissions, the highest level per scope: what a caller must grant.
+  const unread = [...src.matchAll(/^(?: {4})?(inputs|secrets|permissions):[ \t]*([^\s#][^\n]*)$/gm)].map((m) => `${m[1]}: ${m[2].trim()}`);
+  // The workflow's and every job's permissions, the highest level per scope: what a caller must grant.
   const permissions = {};
-  for (const block of blocks(src, /^ {4}permissions:$/)) {
+  for (const block of blocks(src, /^(?: {4})?permissions:$/)) {
     for (const [scope, { value }] of Object.entries(block)) {
       if ((LEVEL[value] ?? 0) > (LEVEL[permissions[scope]] ?? 0)) permissions[scope] = value;
     }

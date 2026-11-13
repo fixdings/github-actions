@@ -55,7 +55,7 @@ jobs:
           # failed part-way finishes it instead of skipping it (release-version.sh writes out a
           # HEAD that already is the latest version).
           git rev-parse -q --verify "refs/tags/$VERSION" > /dev/null || git tag -a "$VERSION" -m "$VERSION"
-          old=$(git ls-remote origin "refs/tags/$MAJOR" | cut -f1)
+          old=$(git ls-remote --refs origin "refs/tags/$MAJOR" | cut -f1)
           if [ "$old" != "$(git rev-parse HEAD)" ]; then
             git tag -f "$MAJOR" HEAD
             # ONE atomic push: the version and the floating major land together or not at all. The

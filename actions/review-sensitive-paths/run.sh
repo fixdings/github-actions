@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Run by actions/review-sensitive-paths/action.yml. GitHub runs a step `run:` under `bash -e` with pipefail; a
-# script invoked as a file gets neither, so it sets them itself.
+# Run by actions/review-sensitive-paths/action.yml. GitHub ran an inline `run:` under `bash -e` with
+# pipefail; a script invoked as a file gets neither, so it sets them itself.
 set -eo pipefail
 
 # Keep in sync with the prompt's list and with claude-code-action's SENSITIVE_PATHS.

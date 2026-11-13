@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Run by actions/review-verify/action.yml. GitHub runs a step `run:` under `bash -e` with pipefail; a
-# script invoked as a file gets neither, so it sets them itself.
+# Run by actions/review-verify/action.yml. GitHub ran an inline `run:` under `bash -e` with
+# pipefail; a script invoked as a file gets neither, so it sets them itself.
 set -eo pipefail
 # Shared with the other actions: actions/lib/, in the same sparse checkout.
 . "$GITHUB_ACTION_PATH/../lib/run-comment.sh"
@@ -101,7 +101,7 @@ if [ -z "$body" ]; then
   # caps at 100 with no pagination, so on a >100-file PR that also edits this workflow
   # the path sorts past the cap, this branch is missed, and the job hard-fails
   # UNREVIEWED — a red check no re-run can ever clear.
-  if gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[].filename' | grep -Fxq "$wf"; then
+  if gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[].filename' | grep -Fx "$wf" > /dev/null; then
     echo "::warning::UNREVIEWED-BY-DESIGN: this PR edits $wf, which the review action refuses to run against. Review it by hand before merging; re-running will not help."
     exit 0
   fi
@@ -153,7 +153,7 @@ if [ "$pending" -ne 0 ]; then
   # transcript step's is: a contributor who can guess the closing tag
   # writes one line and turns workflow commands back on for the rest of
   # the job. A nanosecond timestamp is guessable; this is not.
-  # The trap is the belt to the explicit close's braces: the default shell is `bash -e`,
+  # The trap is the belt to the explicit close's braces: this script runs under `set -e`,
   # so anything failing between the two echoes would leave workflow commands DISABLED
   # for the rest of the job with nothing saying so. The transcript step has had
   # this since it was written; these two branches had not (#84). `trap - EXIT` after

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Run by actions/review-fix-round/action.yml. GitHub runs a step `run:` under `bash -e` with pipefail; a
-# script invoked as a file gets neither, so it sets them itself.
+# Run by actions/review-fix-round/action.yml. GitHub ran an inline `run:` under `bash -e` with
+# pipefail; a script invoked as a file gets neither, so it sets them itself.
 set -eo pipefail
 # Shared with the other actions: actions/lib/, in the same sparse checkout.
 . "$GITHUB_ACTION_PATH/../lib/run-comment.sh"
@@ -10,8 +10,8 @@ set -eo pipefail
 # the PR's author is not. A moved head has its own review coming; a closed PR is done.
 pr=$(gh api "repos/$GH_REPO/pulls/$PR" --jq '[.state, .head.sha, .user.login] | @tsv')
 IFS=$'\t' read -r pr_state pr_head pr_author <<< "$pr"
-if [ "$pr_author" != "claude[bot]" ]; then
-  echo "Skipped: PR #$PR was opened by $pr_author, not claude[bot], so its author answers the review."
+if [ "$pr_author" != "$CLAUDE_BOT" ]; then
+  echo "Skipped: PR #$PR was opened by $pr_author, not $CLAUDE_BOT, so its author answers the review."
   exit 0
 fi
 if [ "$pr_state" != open ] || [ "$pr_head" != "$HEAD_SHA" ]; then
