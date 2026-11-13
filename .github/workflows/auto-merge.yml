@@ -1,0 +1,75 @@
+name: Claude Auto Merge
+
+# Merges a PR when its review run ends `VERDICT: CLEAN`. A BLOCKING verdict is left to the review
+# rounds (`watch-pr`) and gets no comment here. Every other outcome that is not a merge — a failed
+# or verdict-less review, a sensitive change, an edited review workflow, an outside author, a
+# human change request, a red check, a refused merge, a failed read — gets the `needs-human` label
+# and one comment opening `**Not merged: <token> — <prose>.**`, the line `watch-pr` reads.
+# A PR into `group/*` (a milestone group's branch, D-99) is decided and merged like one into the
+# default branch; `group/*` carries no ruleset, so this adds no reach beyond a direct push, and the
+# group's land PR into the default branch passes this whole gate.
+#
+# `workflow_run`, NOT a step in the review workflow: a `pull_request` run executes the PR's own
+# copy of its workflow files, so a PR could rewrite a merge step to merge itself. A `workflow_run`
+# workflow always runs the DEFAULT branch's copy of this file, with a write token, so nothing in
+# the PR decides whether it merges. The corollary: this file takes effect only once it is on the
+# default branch, and the PR that adds or changes it cannot exercise it. Never check out or run
+# PR code here — the job reads the PR through the API only.
+
+#
+# Called from a repo's `.github/workflows/claude-auto-merge.yml` on `workflow_run`; that caller
+# owns the trigger, `run-name`, `concurrency` and the job `permissions` (a called workflow can
+# only narrow them). The `github` context is the caller's, so `github.event.workflow_run` below
+# is the review run that finished — and it is the CALLER's file on the default branch that
+# `workflow_run` runs, so a PR still cannot rewrite the gate.
+on:
+  workflow_call:
+    inputs:
+      sensitive-paths:
+        description: The caller's `vars.REVIEW_SENSITIVE_PATHS`; empty means the built-in list.
+        type: string
+        default: ""
+
+jobs:
+  merge:
+    # `pull_requests` lists only PRs whose head is in THIS repo, so a fork PR is never merged here.
+    # A FAILED review is admitted too: it is a stop the user has to see (labelled `review-failed`),
+    # not a run to ignore. Cancelled and skipped runs are not — a push cancelled them, and the
+    # new head's run decides.
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      (github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure') &&
+      github.event.workflow_run.path == '.github/workflows/claude-code-review.yml' &&
+      github.event.workflow_run.pull_requests[0] != null
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # `actions: read`: `gh pr checks` (step 7) reads each check suite's workflow run, and without
+    # it fails with "Resource not accessible by integration".
+    # No `actions: write`: the gate never re-runs a failed review — the user does.
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+      issues: write
+      checks: read
+      statuses: read
+    steps:
+      # This repo's actions/ at the commit of THIS workflow file. `job.workflow_*` names the called
+      # workflow where `github.*` names the caller, so the scripts are always the ones this file
+      # shipped with — never `@v2`, which floats, nor the caller's checkout. Sparse, non-cone, so
+      # no CLAUDE.md or package.json of this repo lands in the job's tree; no credentials, since
+      # nothing pushes from it. It is not PR code: this job still reads the PR through the API only.
+      - name: Check out this workflow's actions
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .fixdings-actions
+          sparse-checkout: actions/
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Merge if the review is clean
+        uses: ./.fixdings-actions/actions/auto-merge
+        with:
+          sensitive-paths: ${{ inputs.sensitive-paths }}

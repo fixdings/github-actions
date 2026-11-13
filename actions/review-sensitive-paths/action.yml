@@ -1,0 +1,11 @@
+name: Note sensitive paths this PR edits
+description: Warns when a PR edits a config path claude-code-action replaces with the base branch's version before the review starts.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+        PR: ${{ github.event.pull_request.number }}
+      run: bash "$GITHUB_ACTION_PATH/run.sh"

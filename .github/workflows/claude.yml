@@ -1,6 +1,6 @@
 name: Claude Code
 
-# Caller only: the run itself is fixdings/github-actions' reusable-claude.yml.
+# Caller only: the run itself is fixdings/github-actions' tag.yml.
 # Typing "@claude" in a comment is the ONLY way in. `issue_comment` covers both an issue
 # and a PR's conversation — GitHub models a PR as an issue — and
 # `pull_request_review_comment` adds an inline comment on a diff line. Deliberately no
@@ -38,6 +38,6 @@ jobs:
       issues: write
       id-token: write
       actions: read
-    uses: ./.github/workflows/reusable-claude.yml
+    uses: fixdings/github-actions/.github/workflows/tag.yml@v2
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

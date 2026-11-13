@@ -1,0 +1,63 @@
+## Every merge into main is a release: the suite runs, scripts/release-version.sh works out the
+## version from the commit messages since the last tag, and the job tags it, moves the floating
+## major callers pin (`v1`, `v2`) to it and publishes a GitHub Release whose notes list the PRs
+## merged since the previous version. This repo's only; nothing calls it.
+##
+## A merge made with GITHUB_TOKEN starts no `push` workflow, so a PR merged by an auto-merge gate
+## would not release — this repo runs no gate, so every merge here is a person's.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# Tags and the release.
+permissions:
+  contents: write
+
+# Two merges in a row must tag in order, each from the one before; never cancel a run mid-push.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Every tag and commit: the bump reads all the messages since the last version.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      # The PR ran it on the merge ref; this is the commit that gets the tag.
+      - name: Unit tests
+        run: npm test
+
+      - name: Work out the version
+        id: next
+        run: bash scripts/release-version.sh
+
+      - name: Tag, move the major and publish the release
+        if: steps.next.outputs.version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.next.outputs.version }}
+          PREVIOUS: ${{ steps.next.outputs.previous }}
+          MAJOR: ${{ steps.next.outputs.major }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$VERSION" -m "$VERSION"
+          git push origin "refs/tags/$VERSION"
+          # The floating major moves only from the value just read: a lease, so a tag someone
+          # moved by hand in the meantime fails this run instead of being overwritten. Empty means
+          # a new major, whose tag must not exist yet.
+          old=$(git ls-remote origin "refs/tags/$MAJOR" | cut -f1)
+          git tag -f "$MAJOR" HEAD
+          git push --force-with-lease="refs/tags/$MAJOR:$old" origin "refs/tags/$MAJOR"
+          notes=(--generate-notes --notes-start-tag "$PREVIOUS")
+          gh release create "$VERSION" --verify-tag --title "$VERSION" "${notes[@]}"

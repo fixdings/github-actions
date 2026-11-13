@@ -1,7 +1,7 @@
 name: Claude Review Fix
 run-name: Claude Review Fix · ${{ github.event.workflow_run.head_sha }}
 
-# Caller only: the fixer itself is fixdings/github-actions' reusable-claude-review-fix.yml.
+# Caller only: the fixer itself is fixdings/github-actions' review-fix.yml.
 # `workflow_run` always runs the DEFAULT branch's copy of this file, so the PR under review
 # cannot rewrite its own fixer.
 on:
@@ -24,6 +24,6 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
-    uses: ./.github/workflows/reusable-claude-review-fix.yml
+    uses: fixdings/github-actions/.github/workflows/review-fix.yml@v2
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

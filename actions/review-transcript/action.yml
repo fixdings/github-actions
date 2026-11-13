@@ -1,0 +1,13 @@
+name: Dump the review transcript
+description: Prints the result line and the last assistant message of a review run's transcript.
+inputs:
+  execution-file:
+    description: The review step's `execution_file` output.
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        EXECUTION_FILE: ${{ inputs.execution-file }}
+      run: bash "$GITHUB_ACTION_PATH/run.sh"

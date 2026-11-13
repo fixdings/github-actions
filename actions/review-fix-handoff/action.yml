@@ -1,0 +1,21 @@
+name: Hand the PR to a person
+description: Posts the needs-human comment and label when a fix round needs a workflow change or committed nothing.
+inputs:
+  round:
+    description: The round step's `n`.
+    required: true
+  handoff-file:
+    description: The file Claude writes a workflow change to, relative to the workspace.
+    default: claude-review-fix-handoff.md
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+        HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        ROUND: ${{ inputs.round }}
+        HANDOFF: ${{ inputs.handoff-file }}
+      run: bash "$GITHUB_ACTION_PATH/run.sh"
