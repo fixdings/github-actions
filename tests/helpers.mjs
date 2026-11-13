@@ -16,8 +16,8 @@ let skipped = 0;
 // there printed ✓ and counted a pass for a test that had not run, and a later rejection escaped
 // the try/catch entirely: Node killed the process with an uncaught exception at whatever point
 // the rejection surfaced, so a red run reported "0 failed" and the crash landed against an
-// arbitrary file. That is the whole of the `apply.test.mjs` "flake". Async results are collected
-// here and awaited by `settle()` before any summary is printed.
+// arbitrary file — claude-setup's `apply.test.mjs` "flake", where this runner comes from. Async
+// results are collected here and awaited by `settle()` before any summary is printed.
 const pending = [];
 
 export function test(name, fn) {
@@ -41,10 +41,10 @@ export function test(name, fn) {
     console.log(`  ✗ ${name}`);
     console.log(`    ${e.message}`);
     failed++;
-    // Set here, not only in all.mjs: a topic file run on its own (`node tests/rm-guard.test.mjs`)
+    // Set here, not only in all.mjs: a topic file run on its own (`node tests/callers.test.mjs`)
     // never reaches a summary, so without this it printed ✗ and exited 0 — a red file reading
-    // green to anything checking the status. Running one file is the whole reason the CI grant
-    // is `Bash(node tests/*)`, so that path has to fail properly too.
+    // green to anything checking the status. Running one file is what the review's grant
+    // `Bash(node tests/*)` (review.yml) is for, so that path has to fail properly too.
     process.exitCode = 1;
   }
 }

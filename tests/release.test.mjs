@@ -3,7 +3,7 @@
 // git repos; the workflow around it is checked for the parts that decide what reaches callers.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REPO_DIR, repoFile, test } from "./helpers.mjs";
@@ -13,6 +13,7 @@ console.log("release workflow");
 
 const SCRIPT = join(REPO_DIR, "scripts/release-version.sh");
 const WORKFLOW = ".github/workflows/release.yml";
+const releaseStep = () => repoFile(WORKFLOW).match(/run: \|\n((?: {10}.*\n| *\n)*)/)[1].replace(/^ {10}/gm, "");
 
 // A repo with the given tag on its first commit (or each of several tags on a commit of its own,
 // in order) and these commit messages after it, isolated from the user's git config (signing,
@@ -59,18 +60,21 @@ test("a feat is a minor release, and wins over fixes in the same push", () => {
   assert.equal(release("v1.0.3", ["fix: a", "feat: b", "docs: c"]).version, "v1.1.0");
 });
 
-test("a breaking change is a new major, by `!` or by footer", () => {
-  for (const msgs of [["feat!: rename the reusable workflows (#5)"], ["refactor(actions)!: x"],
-    ["feat: x\n\nBREAKING CHANGE: callers move to the new file names"], ["fix: a", "feat!: b"]]) {
+test("a breaking change is a new major, by a `!` in the subject", () => {
+  for (const msgs of [["feat!: rename the reusable workflows (#5)"], ["refactor(actions)!: x"], ["fix: a", "feat!: b"]]) {
     const r = release("v1.4.2", msgs);
     assert.deepEqual([r.version, r.major], ["v2.0.0", "v2"], JSON.stringify(msgs));
   }
 });
 
-test("a squash body's listed commits and a mid-line `!` are not subjects", () => {
-  // GitHub's squash body lists the branch's commits as `* feat: …`.
-  assert.equal(release("v1.0.0", ["fix: x (#6)\n\n* feat: first try\n* feat!: second try"]).version, "v1.0.1");
-  assert.equal(release("v1.0.0", ["fix: handle feat!: in a message"]).version, "v1.0.1");
+// The subject is the PR title the release check judged; the body is the PR's description or its
+// commits, and nothing in it may move the release.
+test("nothing in a commit body moves the release", () => {
+  assert.equal(release("v1.0.0", ["fix: x (#6)\n\n* feat: first try\n* feat!: second try"]).version, "v1.0.1",
+    "a squash body's listed commits");
+  assert.equal(release("v1.0.0", ["fix: typo\n\nBREAKING CHANGE: none"]).version, "v1.0.1", "a breaking-change footer");
+  assert.equal(release("v1.0.0", ["fix: x\n\nfeat: y"]).version, "v1.0.1", "a feat line");
+  assert.equal(release("v1.0.0", ["fix: handle feat!: in a message"]).version, "v1.0.1", "a mid-line `!`");
 });
 
 test("the base is the highest version, not the newest tag or a text sort", () => {
@@ -80,10 +84,12 @@ test("the base is the highest version, not the newest tag or a text sort", () =>
   assert.equal(release(["v1.0.0", "v1"], ["fix: x"]).version, "v1.0.1");
 });
 
-test("an already released HEAD releases nothing, and no tag at all is an error", () => {
-  const same = release("v1.0.0", []);
+test("an already released HEAD is written out again, to finish it; no tag at all is an error", () => {
+  const same = release(["v1.0.0", "v1.0.1"], []);
   assert.equal(same.status, 0, same.log);
-  assert.equal(same.version, undefined, "a re-run on a tagged commit must not tag again");
+  assert.deepEqual([same.version, same.previous, same.major], ["v1.0.1", "v1.0.0", "v1"],
+    "a re-run of a tagged commit names its own version, so the step can finish what is missing");
+  assert.equal(release("v1.0.0", []).previous, "", "the first release has no previous version");
   const none = release("", ["feat: x"]);
   assert.equal(none.status, 1);
   assert.match(none.log, /::error::No vX\.Y\.Z tag/);
@@ -97,13 +103,68 @@ test("the release workflow tests, then tags main, moves the major under a lease 
   assert.match(src, /fetch-depth: 0/, "the bump reads every message since the last tag");
   assert.ok(src.indexOf("run: npm test") !== -1 && src.indexOf("run: npm test") < src.indexOf("run: bash scripts/release-version.sh"),
     "the suite runs before anything is tagged");
-  assert.match(src, /if: steps\.next\.outputs\.version != ''/, "nothing is tagged when HEAD is already released");
-  assert.match(src, /git push --force-with-lease="refs\/tags\/\$MAJOR:\$old" origin "refs\/tags\/\$MAJOR"/,
-    "the floating major moves only from the value just read");
+  assert.match(src, /if: steps\.next\.outputs\.version != ''/, "nothing is tagged when HEAD is behind the last release");
+  assert.match(src, /git push --atomic --force-with-lease="refs\/tags\/\$MAJOR:\$old" origin "refs\/tags\/\$VERSION" "refs\/tags\/\$MAJOR"/,
+    "the version and the major land together, the major only from the value just read");
   assert.doesNotMatch(src, /git push (?:-f|--force)(?:\s|$)/, "no plain force push");
   assert.match(src, /gh release create "\$VERSION" --verify-tag/, "the release is for the tag just pushed");
-  assert.match(src, /--generate-notes --notes-start-tag "\$PREVIOUS"/, "notes cover the PRs since the previous version");
-  const block = src.match(/run: \|\n((?: {10}.*\n| *\n)*)/)[1].replace(/^ {10}/gm, "");
-  const r = spawnSync("bash", ["-n"], { input: block, encoding: "utf8" });
+  assert.match(src, /notes\+=\(--notes-start-tag "\$PREVIOUS"\)/, "notes cover the PRs since the previous version");
+  const r = spawnSync("bash", ["-n"], { input: releaseStep(), encoding: "utf8" });
   assert.equal(r.status, 0, `the release step is not valid shell\n${r.stderr}`);
+});
+
+// The release step run as shipped, against a bare repo standing in for origin and a fake `gh`.
+test("the release step tags, moves the major and publishes, all-or-nothing, and finishes on a re-run", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-step-"));
+  const env = { PATH: `${dir}:${process.env.PATH}`, HOME: dir, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com", FAKE_DIR: dir };
+  const work = join(dir, "work");
+  const sh = (cmd, cwd = work) => spawnSync("bash", ["-c", cmd], { cwd, env, encoding: "utf8" });
+  const git = (cmd, cwd = work) => {
+    const r = sh(`git ${cmd}`, cwd);
+    assert.equal(r.status, 0, `git ${cmd}: ${r.stderr}`);
+    return r.stdout.trim();
+  };
+  // `gh release view` fails until `gh release create` has made the release.
+  writeFileSync(join(dir, "gh"), '#!/bin/sh\ncase "$2" in\n  view) [ -f "$FAKE_DIR/release-$3" ] ;;\n  create) echo "$*" >> "$FAKE_DIR/created"; touch "$FAKE_DIR/release-$3" ;;\nesac\n');
+  chmodSync(join(dir, "gh"), 0o755);
+  const run = (v) => spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail"], {
+    input: releaseStep(), cwd: work, encoding: "utf8",
+    env: { ...env, GH_TOKEN: "x", VERSION: v.version, PREVIOUS: v.previous, MAJOR: v.major } });
+  const remote = (ref) => sh(`git ls-remote origin refs/tags/${ref} | cut -f1`).stdout.trim();
+  try {
+    git("init -q --bare origin.git", dir);
+    git(`clone -q ${join(dir, "origin.git")} work`, dir);
+    git("commit -q --allow-empty -m 'chore: init'");
+    git("tag -a v1.0.0 -m v1.0.0");
+    git("tag v1");
+    git("push -q origin HEAD:main refs/tags/v1.0.0 refs/tags/v1");
+    git("commit -q --allow-empty -m 'fix: x'");
+    const head = git("rev-parse HEAD");
+    const v = { version: "v1.0.1", previous: "v1.0.0", major: "v1" };
+
+    // v1 is not where this run last read it (someone moved it by hand): the lease refuses the
+    // push, and NOTHING lands — not even the version tag.
+    const stale = releaseStep().replace('old=$(git ls-remote origin "refs/tags/$MAJOR" | cut -f1)', "old=0000000000000000000000000000000000000001");
+    assert.notEqual(stale, releaseStep(), "the step's lease read changed spelling — this test rewrites it");
+    const blocked = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail"], {
+      input: stale, cwd: work, encoding: "utf8", env: { ...env, GH_TOKEN: "x", VERSION: v.version, PREVIOUS: v.previous, MAJOR: v.major } });
+    assert.notEqual(blocked.status, 0, "a stale lease must fail the run");
+    assert.equal(remote("v1.0.1"), "", "atomic: the version tag must not land without the major");
+    assert.ok(!existsSync(join(dir, "created")), "and no release is published");
+
+    const first = run(v);
+    assert.equal(first.status, 0, first.stdout + first.stderr);
+    assert.ok(remote("v1.0.1"), "the version tag is pushed");
+    assert.equal(remote("v1"), head, "the floating major points at the release");
+    assert.match(readFileSync(join(dir, "created"), "utf8"), /^release create v1\.0\.1 --verify-tag --title v1\.0\.1 --generate-notes --notes-start-tag v1\.0\.0$/m);
+
+    // A re-run of the same commit finishes nothing twice.
+    const again = run(v);
+    assert.equal(again.status, 0, again.stdout + again.stderr);
+    assert.equal(readFileSync(join(dir, "created"), "utf8").trim().split("\n").length, 1, "the release is published once");
+    assert.match(again.stdout, /Release v1\.0\.1 is already published/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

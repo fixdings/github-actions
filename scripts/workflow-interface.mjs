@@ -33,7 +33,12 @@ function blocks(src, head) {
 
 export function workflowInterface(src) {
   const declared = (head) =>
-    Object.fromEntries(Object.entries(blocks(src, head)[0] ?? {}).map(([name, a]) => [name, { required: a.required === "true" }]));
+    Object.fromEntries(Object.entries(blocks(src, head)[0] ?? {}).map(([name, a]) =>
+      [name, { required: a.required === "true", type: a.type ?? "" }]));
+  // A form this parser does not read — `permissions: write-all`, a flow-style `{ … }` — would
+  // otherwise come back as an empty block and pass as "nothing needed". Named instead, so the
+  // check fails closed on it.
+  const unread = [...src.matchAll(/^ {4}(inputs|secrets|permissions):[ \t]*([^\s#][^\n]*)$/gm)].map((m) => `${m[1]}: ${m[2].trim()}`);
   // Every job's permissions, the highest level per scope: what a caller must grant.
   const permissions = {};
   for (const block of blocks(src, /^ {4}permissions:$/)) {
@@ -41,7 +46,7 @@ export function workflowInterface(src) {
       if ((LEVEL[value] ?? 0) > (LEVEL[permissions[scope]] ?? 0)) permissions[scope] = value;
     }
   }
-  return { inputs: declared(/^ {4}inputs:$/), secrets: declared(/^ {4}secrets:$/), permissions };
+  return { inputs: declared(/^ {4}inputs:$/), secrets: declared(/^ {4}secrets:$/), permissions, unread };
 }
 
 /**
@@ -57,6 +62,13 @@ export function breakingChanges(before, after) {
     }
     const was = workflowInterface(src);
     const now = workflowInterface(after[file]);
+    for (const form of now.unread) {
+      out.push(`${file}: \`${form}\` is not one entry per line, so this check cannot tell what it changes — write it as a block`);
+    }
+    for (const [name, { type }] of Object.entries(now.inputs)) {
+      const had = was.inputs[name]?.type;
+      if (had && type !== had) out.push(`${file}: input \`${name}\` changed type (${had} → ${type || "none"}), and a caller passing the old type fails`);
+    }
     for (const kind of ["inputs", "secrets"]) {
       const one = kind.slice(0, -1);
       for (const name of Object.keys(was[kind])) {

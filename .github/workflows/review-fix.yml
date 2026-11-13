@@ -160,6 +160,25 @@ jobs:
           [ -s "$BODY_FILE" ] || exit 0
           gh pr edit "$PR" --body-file "$BODY_FILE" || echo "::warning::Could not refresh PR #$PR's body."
 
+      # The actions afresh before any step that runs one after Claude did: the fixer held Edit and
+      # Write over the whole tree and ran the PR's tests, either of which could have rewritten a
+      # script in the workspace, and a later step would run it with this job's token. Deleted first, so nothing planted in its .git/ (a hook) runs during the
+      # checkout. Inline, so nothing in the workspace decides it.
+      - name: Remove the actions checkout the run could reach
+        if: ${{ !cancelled() && steps.round.outputs.fix == 'yes' }}
+        run: rm -rf .fixdings-actions
+
+      - name: Check out this workflow's actions afresh
+        if: ${{ !cancelled() && steps.round.outputs.fix == 'yes' }}
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .fixdings-actions
+          sparse-checkout: actions/
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       # Two ways this round ends with a person, both labelled here rather than by Claude, so the
       # hand-off needs no `gh pr edit` in its allowlist. Runs even when the Claude step failed.
       #  - A fix that needs .github/workflows/ — which this unattended run may not write

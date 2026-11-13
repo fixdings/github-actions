@@ -64,14 +64,14 @@ This repo reviews its own PRs with the **released** workflows: its `claude.yml`,
 
 Callers pin the floating major. `v1` keeps the old `reusable-claude*.yml` file names; `v2` renamed them to the four above.
 
-Every merge into `main` is released by `.github/workflows/release.yml`. The squash commit's conventional-commit type picks the bump:
+Every merge into `main` is released by `.github/workflows/release.yml`. The conventional-commit type in the squash commit's subject, the PR title, picks the bump; the body never does:
 
-| Commit | Release |
+| Subject | Release |
 |---|---|
-| `feat!: …`, `fix(x)!: …`, or a `BREAKING CHANGE:` footer | major: `v2.0.0`, and a new floating `v2` |
+| `feat!: …`, `fix(x)!: …` | major: `v2.0.0`, and a new floating `v2` |
 | `feat: …` | minor: `v1.1.0` |
 | anything else (`fix:`, `docs:`, `chore:` …) | patch: `v1.0.1` |
 
-The job tags the version, moves the floating major to it and publishes a [release](https://github.com/fixdings/github-actions/releases) whose notes list the PRs merged since the previous version. Once a newer major exists, the older one gets no more releases from `main`.
+The job pushes the version tag and the moved floating major together, atomically, and publishes a [release](https://github.com/fixdings/github-actions/releases) whose notes list the PRs merged since the previous version. A re-run of a release that failed part-way finishes it. Once a newer major exists, the older one gets no more releases from `main`.
 
-A change to a caller reaches a repo only when its setup is re-run. If existing callers break without it (a new required permission, input or secret), it is a `!` change. The `Release check` workflow fails a PR that does this without a `!` in its title: it compares the reusable workflows with the last release, and a workflow removed or renamed, an input or secret removed or newly required, or a job permission added, needs the `!`. Editing the title re-runs it.
+A change to a caller reaches a repo only when its setup is re-run. If existing callers break without it (a new required permission, input or secret), it is a `!` change. The `Release check` workflow fails a PR that does this without a `!` in its title: it compares the reusable workflows with the last release, and a workflow removed or renamed, an input or secret removed or newly required, an input's type changed, or a job permission added, needs the `!`. So does a block it cannot read (`permissions: write-all`, a `{ … }` flow map): write those as one entry per line. Editing the title re-runs it.

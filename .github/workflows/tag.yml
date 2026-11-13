@@ -66,7 +66,7 @@ jobs:
           # to open the PR for an issue's claude/ branch (the action itself only posts a compare
           # link — docs/faq.md, "Why won't Claude create a pull request?"). `gh api` and
           # `find` are excluded: arbitrary write/exec however they are spelled (see
-          # CLAUDE.md). Commits go through the action's own
+          # .claude/rules/claude-code-action.md). Commits go through the action's own
           # mcp__github_file_ops__* tools — it appends its own --allowedTools, which
           # accumulates rather than replacing, so tag-mode basics are not repeated here.
           # --append-system-prompt, NEVER --system-prompt. The two differ by more than a word:
@@ -80,7 +80,7 @@ jobs:
           # The npm/yarn test rules run the PR's own `scripts.test`, whatever it says — the
           # same grant the review workflow carries, kept so a tag-mode run can verify a change
           # it just made. `Bash(node tests/*)` is NOT copied across: it assumes this repo's
-          # layout and its literal prefix reaches the whole checkout (see CLAUDE.md).
+          # layout and its literal prefix reaches the whole checkout (see .claude/rules/claude-code-action.md).
           # `.claude/` is one of the protected paths (code.claude.com/docs/en/permission-modes#protected-paths),
           # beside `.git`, `.vscode`, `.husky`, `.npmrc`, `.mcp.json`, `lefthook.yml` and more; the
           # prompt names them all, so do not cut its list back to `.claude/`.

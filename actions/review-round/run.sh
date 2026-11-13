@@ -20,8 +20,8 @@ count=$(gh run list --repo "$REPO" --workflow "${wf##*/}" --branch "$HEAD_REF" -
   exit 1
 }
 # The list shows a re-run as ONE run (its latest attempt), so this run's earlier
-# attempts are added from GITHUB_RUN_ATTEMPT — a default env var on every runner, so it
-# needs no `env:` entry (and GITHUB_* defaults cannot be overridden there anyway).
+# attempts are added from GITHUB_RUN_ATTEMPT — a default env var on every runner, so
+# action.yml passes nothing for it.
 # Earlier runs' re-runs stay uncounted: accepted for an informational line.
 n=$((count + ${GITHUB_RUN_ATTEMPT:-1} - 1))
 # The repo variable is set by `claude-setup github` only while auto-merge is on; unset

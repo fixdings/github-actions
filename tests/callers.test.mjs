@@ -136,7 +136,13 @@ const triggers = (src) => {
 // is what keeps it from evicting real work.
 test("the tag caller keeps non-working runs out of the shared concurrency group", () => {
   const group = collapsed(concurrencyBlock(caller("claude.yml")));
-  assert.match(group, /claude\[bot\]/, "bot-authored runs must not take the shared group");
+  // Every run the tag workflow's job `if` rejects goes to the no-op group: the exact negation of
+  // that `if`, so a comment without "@claude" cannot take the one pending slot either.
+  const jobIf = collapsed(repoFile(WORKFLOWS_DIR + "tag.yml").match(/^ {4}if: \|\n((?: {6}.*\n)+)/m)[1]).trim();
+  assert.equal(jobIf, "github.actor != 'claude[bot]' && contains(github.event.comment.body, '@claude')",
+    "tag.yml's job if changed — the no-op group below must stay its negation");
+  assert.match(group, /\$\{\{ \(github\.actor == 'claude\[bot\]' \|\| !contains\(github\.event\.comment\.body, '@claude'\)\) && format\('claude-noop-/,
+    "every run the job `if` rejects must stay out of the shared group");
   assert.match(group, /format\('claude-noop-\{0\}', github\.run_id\)/,
     "the escape group must be unique per run, or the phantoms just contend with each other");
   assert.match(group, /format\('claude-\{0\}', github\.event\.issue\.number \|\| github\.event\.pull_request\.number\)/,

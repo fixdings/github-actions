@@ -22,7 +22,7 @@ Path-scoped, loaded when you open a file they cover. Read the one that matches b
 ## Repo Structure
 
 - `.github/workflows/tag.yml` · `review.yml` · `review-fix.yml` · `auto-merge.yml` — the reusable workflows, each `on: workflow_call`. Callers reference them as `fixdings/github-actions/.github/workflows/<name>.yml@v2`. GitHub reads no subfolder of `.github/workflows/`.
-- `actions/<name>/` — `action.yml` (a composite action: inputs, the env its script reads) and `run.sh`. One per scripted step; `review-*` serve `review.yml`, `review-fix-*` serve `review-fix.yml`, `auto-merge` is the gate.
+- `actions/<name>/` — `action.yml` (a composite action: inputs, the env its script reads) and `run.sh`. One per scripted step; `review-*` serve `review.yml`, `review-fix-*` serve `review-fix.yml`, `auto-merge` is the gate. `actions/lib/` holds the shell they share (`run-comment.sh`, `needs-human.sh`), sourced, not run.
 - `.github/workflows/claude.yml` · `claude-code-review.yml` · `claude-review-fix.yml` — callers a repo installs, which this repo runs too: they call the released `fixdings/github-actions/.github/workflows/<name>.yml@v2`, so this repo is reviewed by what everyone runs. One copy each: these are the installed files.
 - `callers/` — `manifest.json` (every caller's source path, group, repo variables, secrets) for claude-setup to read, and `claude-auto-merge.yml`, the opt-in gate, kept out of `.github/workflows/` so nothing merges itself here.
 - `.github/workflows/ci.yml` · `release.yml` · `release-check.yml` — this repo only: the suite on every PR, a release on every merge, and a check that a PR breaking installed callers carries `!` in its title.

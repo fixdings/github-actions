@@ -2,6 +2,8 @@
 # Run by actions/review-verify/action.yml. GitHub runs a step `run:` under `bash -e` with pipefail; a
 # script invoked as a file gets neither, so it sets them itself.
 set -eo pipefail
+# Shared with the other actions: actions/lib/, in the same sparse checkout.
+. "$GITHUB_ACTION_PATH/../lib/run-comment.sh"
 
 # The action's own verdict on its process, named if it says the run errored (#113). What
 # it answers that nothing else here can: WHY a round produced no usable review.
@@ -66,71 +68,24 @@ if [ "$REVIEW_OUTCOME" = "failure" ]; then
   echo "::error::The review step failed, which is not a verdict on this code. Whether the round was reviewed depends on the cause: an infrastructure problem (token/secret/action), a crash mid-review or a max-turns abort leave it UNREVIEWED and a re-run may help, while a post-review step failing after the review finished leaves a complete review on the PR. Check this run's review comment before re-running.$(crash_note)"
   exit 1
 fi
-# Match THIS run's comment by author AND the job link it carries:
-# claude.yml posts its own tracking comment on the same PR as the same
-# bot, every earlier round of THIS workflow left one too, and anyone
-# may quote a run URL in a plain comment.
+# THIS run's tracking comment, chosen by actions/lib/run-comment.sh — the gate and the fixer use
+# the same selection. Its boundary is this attempt's `run_started_at`: on the plain run object it
+# already means "this attempt" (it resets on re-run; verified on run 34423995620, whose
+# run_started_at equals attempts/2.run_started_at). This step only runs inside the current
+# attempt, and GitHub refuses to re-run a run still in progress, so "latest" and "current"
+# cannot diverge here.
 #
-# A RE-RUN REUSES THE RUN ID, so a dead attempt leaves a tracking comment that matches
-# the run filter below just as well as this attempt does — and `first` then picks the
-# dead one forever, which is why a re-run could never go green however well it went
-# (run 34423995620 on PR #93: attempt 1 stalled, attempt 2 posted a full review, the
-# step still failed citing attempt 1's two unchecked boxes). The comment bodies cannot
-# settle it: the action writes the job link and it stops at the run, carrying no
-# attempt. So the boundary comes from GitHub's own metadata — any comment older than
-# this attempt started belongs to an earlier one.
-#
-# `run_started_at` on the plain run object ALREADY means "this attempt": it resets on
-# re-run, where `created_at` keeps the original. No attempt number is needed, and the
-# /attempts/N endpoint was tried first and dropped as the same answer by a longer
-# route. Verified on run 34423995620, which has two attempts:
-#   run.created_at      = 2026-09-10T01:04:46Z  (attempt 1 — does NOT move)
-#   run.run_started_at  = 2026-09-10T01:11:42Z  = attempts/2.run_started_at
-# This step only ever runs inside the current attempt, and GitHub refuses to re-run a
-# run that is still in progress, so "latest" and "current" cannot diverge here.
-#
-# Unreadable (lost permission, API change) → no time filter, i.e. exactly the previous
-# behaviour, and that is a warning rather than a failure: it only ever matters on a
-# re-run, and a first attempt must not start failing over it.
+# Unreadable (lost permission, API change) → no time filter, and a warning rather than a failure:
+# it only ever matters on a re-run, and a first attempt must not start failing over it.
 since=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq '.run_started_at // empty' 2>/dev/null) || since=""
 if [ -z "$since" ]; then
   echo "::warning::Could not read run $RUN_ID's start time, so comments from an earlier attempt cannot be excluded. On a re-run, a stale tracking comment may be read instead of this attempt's."
 fi
-# EVERY PAGE FROM `since`, the gate's own read (claude-auto-merge step 6). The
-# issue-comments endpoint takes no sort or direction, so one unpaged read is the OLDEST
-# 100: on a PR past 100 comments this run's comment was never in it and every round
-# failed UNREVIEWED, re-run or not. `since=` filters on UPDATE time, so an edited older
-# comment can come back — the created_at filter below drops it — but nothing created
-# after `since` is ever cut. With no start time, every page is read.
-comments=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100${since:+&since=$since}") || {
+comment=$(run_comment "$REPO" "$PR" "$RUN_ID" "$since") || {
   echo "::error::Could not read this PR's comments — the check could not run. This is not a verdict on the review."
   exit 1
 }
-body=$(printf '%s' "$comments" | jq -rs --arg run "$RUN_ID" --arg since "$since" '
-      add // []
-      | map(select((.user.login // "") == "claude[bot]"
-                or (.user.login // "") == "github-actions[bot]"))
-      | map(select((.body // "") | test("actions/runs/" + $run + "([^0-9]|$)")))
-      # Drop earlier attempts of the same run. Both timestamps are GitHub-generated
-      # ISO-8601 UTC of fixed width, so a string compare is a chronological one; an
-      # empty $since means the start time could not be read and nothing is filtered.
-      | map(select($since == "" or ((.created_at // "") >= $since)))
-      # NO APOSTROPHE anywhere in these comments: the whole program is one
-      # single-quoted shell word, so one of them would end it mid-filter.
-      # SORTED HERE, not trusted from the API. The tracking comment is opened before
-      # Claude starts, so it is the earliest of the comments this run left, and `first`
-      # only means that in ascending order. Ordering explicitly makes the selection
-      # independent of the endpoint order rather than quietly coupled to it.
-      | sort_by(.id)
-      # `first`, NOT `last`. `last` instead picked whatever the reviewer posted later
-      # through `Bash(gh pr comment:*)`; when that was a "Follow-ups: - [ ] …" list,
-      # the awk block below read the follow-up as an unfinished tracker task and
-      # called a completed review UNREVIEWED.
-      # Position alone, with no "does it look like a tracker" test: a checklist probe
-      # here is only a proxy, and when the tracker itself has no checklist it selects
-      # the follow-ups comment instead and fails with "1 unchecked task" where the
-      # honest answer is the "No progress checklist" error below.
-      | first // {} | .body // ""')
+body=$(printf '%s' "$comment" | jq -r '.body // ""')
 if [ -z "$body" ]; then
   # claude-code-action deliberately no-ops on a PR that edits a
   # workflow ("Action skipped due to workflow validation error …

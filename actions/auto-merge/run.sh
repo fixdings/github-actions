@@ -2,6 +2,9 @@
 # Run by actions/auto-merge/action.yml. GitHub runs a step `run:` under `bash -e` with pipefail; a
 # script invoked as a file gets neither, so it sets them itself.
 set -eo pipefail
+# Shared with the other actions: actions/lib/, in the same sparse checkout.
+. "$GITHUB_ACTION_PATH/../lib/run-comment.sh"
+. "$GITHUB_ACTION_PATH/../lib/needs-human.sh"
 
 # Entries: a trailing `/` is a directory prefix, no `/` is a file name at any depth,
 # anything else an exact path, a leading `!` an exception. A path is sensitive when a
@@ -110,10 +113,7 @@ needs_human() {
   f=$(mktemp)
   comment_body "$1" "$2" "$3" > "$f"
   gh pr comment "$PR" --body-file "$f" || echo "::warning::Could not comment on PR #$PR."
-  if ! gh pr edit "$PR" --add-label needs-human; then
-    gh label create needs-human --color d93f0b --description "Waiting on a person — see the needs-human comment" || true
-    gh pr edit "$PR" --add-label needs-human || echo "::warning::Could not label PR #$PR."
-  fi
+  label_needs_human "$PR"
   echo "PR #$PR needs a human: $1."
 }
 
@@ -232,20 +232,12 @@ hits=$(printf '%s\n' "$files" | awk -v list="$sensitive" "$SENSITIVE_AWK")
 reviews=$(gh api --paginate "repos/$GH_REPO/pulls/$PR/reviews?per_page=100") || fail reviews
 changes=$(printf '%s' "$reviews" | jq -s "$REVIEWS_JQ") || fail reviews
 
-# 6. The verdict, from this run's tracking comment — the verify step's own selection:
-#    the bot, the run link, nothing older than this attempt, the earliest such comment.
-#    The issue-comments endpoint ignores sort/direction (one unpaged read is the OLDEST
-#    100), so it pages, from `since=` the run's start. A failed run has no verdict to read.
+# 6. The verdict, from this run's tracking comment — actions/lib/run-comment.sh, the verify
+#    step's own selection, paged from the run's start. A failed run has no verdict to read.
 verdicts=""
 comment_url=""
 if [ "$RUN_CONCLUSION" = success ]; then
-  comments=$(gh api --paginate "repos/$GH_REPO/issues/$PR/comments?per_page=100&since=$RUN_STARTED_AT") || fail review-comment
-  comment=$(printf '%s' "$comments" | jq -cs --arg run "$RUN_ID" --arg since "$RUN_STARTED_AT" --arg bot "$CLAUDE_BOT" '
-    add // []
-    | map(select((.user.login // "") == $bot or (.user.login // "") == "github-actions[bot]"))
-    | map(select((.body // "") | test("actions/runs/" + $run + "([^0-9]|$)")))
-    | map(select((.created_at // "") >= $since))
-    | sort_by(.id) | first // {}') || fail review-comment
+  comment=$(run_comment "$GH_REPO" "$PR" "$RUN_ID" "$RUN_STARTED_AT") || fail review-comment
   body=$(printf '%s' "$comment" | jq -r '.body // ""') || fail review-comment
   comment_url=$(printf '%s' "$comment" | jq -r '.html_url // ""') || fail review-comment
   verdicts=$(printf '%s\n' "$body" | awk "$VERDICT_AWK")

@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       # github.token only (checkout, the verify step, the github_ci MCP server). It does
-      # NOT bound Claude — see additional_permissions below and CLAUDE.md.
+      # NOT bound Claude — see additional_permissions below and .claude/rules/claude-code-action.md.
       contents: read
       pull-requests: write
       issues: read
@@ -377,7 +377,7 @@ jobs:
           # above (gh pr/issue/search for earlier PRs, git blame for history); a tool the
           # reviewer needs but lacks is denied silently, not loudly. Never widen
           # to a family — a wildcard makes a rule a shell (`node -e`, `find -exec`, `gh api
-          # -X DELETE`), and the PR diff is untrusted input. See CLAUDE.md.
+          # -X DELETE`), and the PR diff is untrusted input. See .claude/rules/claude-code-action.md.
           # `Bash(npm test*)` runs the PR's own scripts.test: kept because a target repo may
           # have no CI running the suite, so it is the only way to verify behaviour.
           # `Bash(node tests/*)` is THIS repo's layout, and it is a real grant in whatever repo
@@ -404,6 +404,25 @@ jobs:
             --model opus
             --mcp-config '{"mcpServers": {"context7": {"command": "npx", "args": ["-y", "@upstash/context7-mcp"]}}}'
             --allowedTools "mcp__github_ci__*,mcp__context7__*,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr checks:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git blame:*),Bash(npm test*),Bash(npm run test*),Bash(yarn test*),Bash(yarn run test*),Bash(node tests/*),Bash(printf:*),Bash(cat:*),Bash(wc:*),Bash(diff:*),Bash(grep:*),Read,Grep,Glob,Bash(ls:*)"
+
+      # The actions afresh before any step that runs one after Claude did: the review ran the PR's
+      # own code (`npm test`, `node tests/*`), which could have rewritten a script in the
+      # workspace, and a later step would run it with this job's token. Deleted first, so nothing planted in its .git/ (a hook) runs during the
+      # checkout. Inline, so nothing in the workspace decides it.
+      - name: Remove the actions checkout the run could reach
+        if: ${{ !cancelled() }}
+        run: rm -rf .fixdings-actions
+
+      - name: Check out this workflow's actions afresh
+        if: ${{ !cancelled() }}
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .fixdings-actions
+          sparse-checkout: actions/
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
 
       # A review that stops early still exits 0 — the action leaves its tracking
       # comment as it stands and finishes. Callers (and the watch-pr skill) then read a green

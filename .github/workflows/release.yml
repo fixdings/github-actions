@@ -51,13 +51,25 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$VERSION" -m "$VERSION"
-          git push origin "refs/tags/$VERSION"
-          # The floating major moves only from the value just read: a lease, so a tag someone
-          # moved by hand in the meantime fails this run instead of being overwritten. Empty means
-          # a new major, whose tag must not exist yet.
+          # Resumable: each part is done only when it is not done yet, so re-running a release that
+          # failed part-way finishes it instead of skipping it (release-version.sh writes out a
+          # HEAD that already is the latest version).
+          git rev-parse -q --verify "refs/tags/$VERSION" > /dev/null || git tag -a "$VERSION" -m "$VERSION"
           old=$(git ls-remote origin "refs/tags/$MAJOR" | cut -f1)
-          git tag -f "$MAJOR" HEAD
-          git push --force-with-lease="refs/tags/$MAJOR:$old" origin "refs/tags/$MAJOR"
-          notes=(--generate-notes --notes-start-tag "$PREVIOUS")
-          gh release create "$VERSION" --verify-tag --title "$VERSION" "${notes[@]}"
+          if [ "$old" != "$(git rev-parse HEAD)" ]; then
+            git tag -f "$MAJOR" HEAD
+            # ONE atomic push: the version and the floating major land together or not at all. The
+            # major moves only from the value just read — a lease, so a tag someone moved by hand in
+            # the meantime fails this run instead of being overwritten. Empty means a new major,
+            # whose tag must not exist yet.
+            git push --atomic --force-with-lease="refs/tags/$MAJOR:$old" origin "refs/tags/$VERSION" "refs/tags/$MAJOR"
+          else
+            git push origin "refs/tags/$VERSION"
+          fi
+          if gh release view "$VERSION" > /dev/null 2>&1; then
+            echo "Release $VERSION is already published."
+          else
+            notes=(--generate-notes)
+            if [ -n "$PREVIOUS" ]; then notes+=(--notes-start-tag "$PREVIOUS"); fi
+            gh release create "$VERSION" --verify-tag --title "$VERSION" "${notes[@]}"
+          fi

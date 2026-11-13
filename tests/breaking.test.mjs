@@ -23,8 +23,11 @@ const input = (name, attrs = "        type: string\n") => `      ${name}:\n${att
 
 test("the interface is read from this repo's own workflows", () => {
   const review = workflowInterface(repoFile(".github/workflows/review.yml"));
-  assert.deepEqual(review.inputs, { "round-budget": { required: false } });
-  assert.deepEqual(review.secrets, { CLAUDE_CODE_OAUTH_TOKEN: { required: true } });
+  assert.deepEqual(review.inputs, { "round-budget": { required: false, type: "string" } });
+  assert.deepEqual(review.secrets, { CLAUDE_CODE_OAUTH_TOKEN: { required: true, type: "" } });
+  for (const f of ["tag.yml", "review.yml", "review-fix.yml", "auto-merge.yml"]) {
+    assert.deepEqual(workflowInterface(repoFile(`.github/workflows/${f}`)).unread, [], `${f}: every block is one the check reads`);
+  }
   assert.equal(review.permissions["actions"], "read");
   assert.equal(review.permissions["id-token"], "write");
   assert.equal(review.permissions["contents"], "read", "a comment between entries is skipped");
@@ -43,6 +46,15 @@ test("what breaks a caller written for the old interface", () => {
     /now needs `contents: write` \(was read\)/);
   assert.match(same(wf({ inputs: input("budget"), secrets: "      TOKEN:\n        required: true\n", perms: "      contents: read\n      checks: read\n" })).join(),
     /now needs `checks: read` \(was none\)/);
+  assert.match(same(wf({ inputs: input("budget", "        type: number\n"), secrets: "      TOKEN:\n        required: true\n" })).join(),
+    /input `budget` changed type \(string → number\)/, "a caller passing `${{ vars.X }}`, a string, fails a number input");
+  // Forms the parser does not read fail closed rather than passing as "nothing needed".
+  const asIs = wf({ inputs: input("budget"), secrets: "      TOKEN:\n        required: true\n" });
+  for (const form of ["permissions: write-all", "permissions: { contents: write }"]) {
+    const after = asIs.replace("    permissions:\n      contents: read\n", `    ${form}\n`);
+    assert.notEqual(after, asIs, "the fixture changed shape — this test rewrites it");
+    assert.match(same(after).join(), new RegExp(`\`${form.replace(/[{}]/g, "\\$&")}\` is not one entry per line`), form);
+  }
 });
 
 test("what a caller written for the old interface still runs against", () => {
@@ -58,7 +70,8 @@ test("the title rule is the one the release bumps a major on", () => {
   for (const t of ["feat!: rename", "fix(review)!: drop input", "refactor!: x"]) assert.ok(marksBreaking(t), t);
   for (const t of ["feat: x", "fix: handle feat!: in text", "feat(x): y", "Feat!: capital"]) assert.ok(!marksBreaking(t), t);
   // release-version.sh's grep, applied to the same subjects.
-  const grep = repoFile("scripts/release-version.sh").match(/grep -Eq '(\^\[a-z\][^']*?)\|\^BREAKING/)[1];
+  const grep = repoFile("scripts/release-version.sh").match(/grep -Eq '(\^\[a-z\]\+[^']*!:)'/)?.[1];
+  assert.ok(grep, "release-version.sh's major pattern changed spelling — this test reads it");
   const re = new RegExp(grep);
   for (const t of ["feat!: rename", "fix(review)!: drop input", "feat: x", "fix: handle feat!: in text", "Feat!: capital"]) {
     assert.equal(re.test(t), marksBreaking(t), `release-version.sh and the check disagree on "${t}"`);

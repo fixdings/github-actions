@@ -22,6 +22,8 @@ const ACTIONS_DIR = "actions/";
 const ACTIONS = readdirSync(join(REPO_DIR, ACTIONS_DIR)).filter((n) => existsSync(join(REPO_DIR, ACTIONS_DIR, n, "action.yml")));
 const actionScript = (name) => readWorkflow(`${ACTIONS_DIR}${name}/run.sh`);
 const actionYml = (name) => readWorkflow(`${ACTIONS_DIR}${name}/action.yml`);
+// Where a script finds actions/lib/ when a test runs it from stdin, as the runner sets it.
+const actionPath = (name) => join(REPO_DIR, ACTIONS_DIR, name);
 // Trim HERE, once, rather than at each call site. Every check below anchors on `^Bash\(`, so
 // a single space after a comma in the YAML turns each rule into " Bash(...)" and every one of
 // those anchors silently stops matching — the interpreter ban then goes green on `Bash(node:*)`
@@ -137,6 +139,7 @@ test("every action script and workflow `run:` block is valid shell", () => {
   let checked = 0;
   const shells = [
     ...ACTIONS.map((a) => [`${ACTIONS_DIR}${a}/run.sh`, actionScript(a)]),
+    ...readdirSync(join(REPO_DIR, ACTIONS_DIR, "lib")).map((f) => [`${ACTIONS_DIR}lib/${f}`, readWorkflow(`${ACTIONS_DIR}lib/${f}`)]),
     ...REUSABLE.flatMap((f) => runBlocks(readWorkflow(REUSABLE_DIR + f)).map((b, i) => [`${f} run block #${i + 1}`, b])),
   ];
   for (const [where, src] of shells) {
@@ -152,13 +155,17 @@ test("every action script and workflow `run:` block is valid shell", () => {
 // through a checkout of THIS repo at `job.workflow_sha`: the commit of the called workflow, so a
 // caller pinned to any tag runs the scripts that shipped with it. Every action is used, every use
 // names an action that exists, and the checkout follows any checkout of the PR, which would
-// empty the workspace and the actions with it.
+// empty the workspace and the actions with it. After Claude has run — with Edit/Write, or the
+// PR's own tests — the workspace copy is not trusted: an action runs only from a checkout made
+// after that step, into a directory deleted first so nothing planted in its .git/ runs.
 test("every reusable workflow runs its own actions, checked out at its own commit", () => {
   const used = new Set();
   for (const f of REUSABLE) {
     const steps = stepBlocks(readWorkflow(REUSABLE_DIR + f));
     const isTools = (s) => /repository: \$\{\{ job\.workflow_repository \}\}\n\s*ref: \$\{\{ job\.workflow_sha \}\}\n\s*path: \.fixdings-actions\n/.test(s);
     const isPr = (s) => /uses: actions\/checkout@/.test(s) && !isTools(s);
+    const isRemove = (s) => /^ {8}run: rm -rf \.fixdings-actions$/m.test(s);
+    const claude = steps.findIndex((s) => /uses: anthropics\/claude-code-action@/.test(s));
     for (const [i, s] of steps.entries()) {
       const m = s.match(/uses: \.\/\.fixdings-actions\/actions\/([\w-]+)\n/);
       if (!m) continue;
@@ -167,6 +174,16 @@ test("every reusable workflow runs its own actions, checked out at its own commi
       const lastTools = steps.slice(0, i).findLastIndex(isTools);
       const lastPr = steps.slice(0, i).findLastIndex(isPr);
       assert.ok(lastTools > lastPr, `${f}: ${m[1]} runs without the actions checked out after the PR's own checkout`);
+      if (claude !== -1 && i > claude) {
+        assert.ok(lastTools > claude, `${f}: ${m[1]} runs after Claude from a checkout Claude could rewrite`);
+        assert.ok(isRemove(steps[lastTools - 1]), `${f}: the checkout before ${m[1]} must follow \`rm -rf .fixdings-actions\``);
+        // It must run whenever the action does: the same `if`, or one that runs on anything but a
+        // cancel (a `failure()` step's included).
+        const cond = (step) => step.match(/^ {8}if: (.*)$/m)?.[1];
+        assert.equal(cond(steps[lastTools - 1]), cond(steps[lastTools]), `${f}: the removal and the fresh checkout run together`);
+        assert.ok([cond(s), "${{ !cancelled() }}"].includes(cond(steps[lastTools])),
+          `${f}: the fresh checkout must run whenever ${m[1]} does`);
+      }
     }
     for (const s of steps.filter(isTools)) {
       assert.match(s, /sparse-checkout: actions\/\n\s*sparse-checkout-cone-mode: false\n/, `${f}: the actions checkout must hold actions/ only`);
@@ -1326,8 +1343,26 @@ test("every gh read in the gate is checked, and the comment read pages from run_
       `this gh read is unchecked, so a failure kills the job under bash -e instead of stopping gate-error:\n    ${line.trim()}`);
   }
   // The issue-comments endpoint ignores sort/direction, so one unpaged read is the OLDEST 100.
-  assert.match(script, /gh api --paginate "repos\/\$GH_REPO\/issues\/\$PR\/comments\?per_page=100&since=\$RUN_STARTED_AT"/);
-  assert.doesNotMatch(script, /sort=created|direction=desc/, "the endpoint ignores them; they only suggest an order it never gives");
+  const lib = readWorkflow(`${ACTIONS_DIR}lib/run-comment.sh`);
+  assert.match(lib, /gh api --paginate "repos\/\$1\/issues\/\$2\/comments\?per_page=100\$\{4:\+&since=\$4\}"/);
+  assert.match(script, /comment=\$\(run_comment "\$GH_REPO" "\$PR" "\$RUN_ID" "\$RUN_STARTED_AT"\) \|\| fail review-comment/,
+    "the gate reads the comment from the run's start, and a failed read is a gate-error stop");
+  assert.doesNotMatch(lib + script, /sort=created|direction=desc/, "the endpoint ignores them; they only suggest an order it never gives");
+});
+
+// The gate, the fixer and the verify step must pick the same tracking comment for one run, so the
+// selection lives once, in actions/lib/run-comment.sh — a copy that drifted is how the verify step
+// came to read the oldest 100 comments while the gate paged them.
+test("the three readers of a review's tracking comment share one selection", () => {
+  for (const a of ["auto-merge", "review-fix-round", "review-verify"]) {
+    const src = actionScript(a);
+    assert.match(src, /^\. "\$GITHUB_ACTION_PATH\/\.\.\/lib\/run-comment\.sh"$/m, `${a}: sources the shared selection`);
+    assert.match(src, /\brun_comment "/, `${a}: calls it`);
+    assert.doesNotMatch(src, /issues\/\$PR\/comments/, `${a}: reads the comments itself — a second copy of the selection`);
+  }
+  for (const a of ACTIONS) {
+    assert.doesNotMatch(actionScript(a), /gh label create/, `${a}: creates the needs-human label itself — use label_needs_human`);
+  }
 });
 
 // The verify step reads the same endpoint, and read it as one `sort=created&direction=desc` page —
@@ -1359,7 +1394,7 @@ test("the verify step pages the PR's comments from the attempt's start, as the g
       for (const [url, v] of Object.entries(fixtures)) writeFileSync(join(dir, "api", url.replace(/[^A-Za-z0-9]/g, "_")), JSON.stringify(v));
       return spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail"], {
         input: script, encoding: "utf8", cwd: dir,
-        env: { PATH: `${dir}:${process.env.PATH}`, FAKE_DIR: dir, GH_TOKEN: "x", REPO: "o/r", PR: "7", RUN_ID: "99",
+        env: { PATH: `${dir}:${process.env.PATH}`, FAKE_DIR: dir, GITHUB_ACTION_PATH: actionPath("review-verify"), GH_TOKEN: "x", REPO: "o/r", PR: "7", RUN_ID: "99",
           REVIEW_OUTCOME: "success", GITHUB_WORKFLOW_REF: "o/r/.github/workflows/claude-code-review.yml@refs/pull/7/merge",
           EXECUTION_FILE: "", ROUND_N: "2", ROUND_BUDGET: "3" },
       });
@@ -1457,7 +1492,7 @@ test("the gate end to end against a fake gh (Req 2.8, 2.10, 2.12)", () => {
       const r = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail"], {
         input: script, encoding: "utf8", cwd: dir,
         env: {
-          PATH: `${dir}:${process.env.PATH}`, FAKE_DIR: dir, TMPDIR: dir, GH_TOKEN: "x", GH_REPO: "o/r", PR: "7",
+          PATH: `${dir}:${process.env.PATH}`, FAKE_DIR: dir, GITHUB_ACTION_PATH: actionPath("auto-merge"), TMPDIR: dir, GH_TOKEN: "x", GH_REPO: "o/r", PR: "7",
           HEAD_SHA: "abc", RUN_ID: "99", RUN_STARTED_AT: STARTED, RUN_CONCLUSION: conclusion, REVIEW_WORKFLOW: WF,
           DEFAULT_BRANCH: "main", REVIEW_SENSITIVE_PATHS: sensitive, GITHUB_SERVER_URL: "https://github.com", GITHUB_RUN_ID: "123",
           FAKE_CHECKS: checks, FAKE_CHECKS_JSON: typeof checksJson === "string" ? checksJson : JSON.stringify(checksJson), FAKE_CHECKS_FAIL: checksFail,
@@ -1780,7 +1815,7 @@ test("only claude.yml asks for workflows: write; the fixer hands a workflow chan
       if (content !== undefined) writeFileSync(join(dir, "claude-review-fix-handoff.md"), content);
       const r = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail"], {
         input: handoff, encoding: "utf8", cwd: dir,
-        env: { PATH: `${dir}:${process.env.PATH}`, FAKE_DIR: dir, TMPDIR: dir, PR: "7", HANDOFF: "claude-review-fix-handoff.md",
+        env: { PATH: `${dir}:${process.env.PATH}`, FAKE_DIR: dir, GITHUB_ACTION_PATH: actionPath("review-fix-handoff"), TMPDIR: dir, PR: "7", HANDOFF: "claude-review-fix-handoff.md",
           GH_REPO: "o/r", HEAD_SHA: "abc", ROUND: "2", FAKE_HEAD: head, GITHUB_SERVER_URL: "https://github.com", GITHUB_RUN_ID: "5" },
       });
       const read = (f) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : "");
@@ -1868,7 +1903,7 @@ test("the fix workflow's round step end to end against a fake gh", () => {
       writeFileSync(out, "");
       const r = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail"], {
         input: script, encoding: "utf8", cwd: dir,
-        env: { PATH: `${dir}:${process.env.PATH}`, FAKE_DIR: dir, TMPDIR: dir, RUNNER_TEMP: dir, GITHUB_OUTPUT: out,
+        env: { PATH: `${dir}:${process.env.PATH}`, FAKE_DIR: dir, GITHUB_ACTION_PATH: actionPath("review-fix-round"), TMPDIR: dir, RUNNER_TEMP: dir, GITHUB_OUTPUT: out,
           GH_TOKEN: "x", GH_REPO: "o/r", PR: "7", HEAD_SHA: "abc", RUN_ID: "99", RUN_STARTED_AT: STARTED },
       });
       const read = (f) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : "");

@@ -2,6 +2,8 @@
 # Run by actions/review-fix-handoff/action.yml. GitHub runs a step `run:` under `bash -e` with pipefail; a
 # script invoked as a file gets neither, so it sets them itself.
 set -eo pipefail
+# Shared with the other actions: actions/lib/, in the same sparse checkout.
+. "$GITHUB_ACTION_PATH/../lib/needs-human.sh"
 
 f=$(mktemp)
 if [ -s "$HANDOFF" ]; then
@@ -18,7 +20,4 @@ else
     "$ROUND" "$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID" > "$f"
 fi
 gh pr comment "$PR" --body-file "$f" || echo "::warning::Could not comment on PR #$PR."
-if ! gh pr edit "$PR" --add-label needs-human; then
-  gh label create needs-human --color d93f0b --description "Waiting on a person — see the needs-human comment" || true
-  gh pr edit "$PR" --add-label needs-human || echo "::warning::Could not label PR #$PR."
-fi
+label_needs_human "$PR"
