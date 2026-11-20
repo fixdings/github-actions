@@ -1,7 +1,1 @@
 blank_issues_enabled: false
-# GitHub recommends a non-issue escape hatch when blank issues are disabled.
-# Uncomment and point it at your project (e.g. Discussions or a support channel):
-# contact_links:
-#   - name: Questions & Discussions
-#     url: https://github.com/OWNER/REPO/discussions
-#     about: Ask questions and discuss ideas here instead of filing an issue.
