@@ -118,6 +118,50 @@ test("the check fails a breaking change under a patch title, and only that", () 
   assert.equal(run(widened, undefined).status, 0, "run by hand, it only lists");
 });
 
+// A `!` title releases the next major, so the callers in callers/ must move to it in the same PR;
+// any other title keeps the base major. Checked whether or not the interface changed.
+test("the check holds the callers' pin to the major the PR releases", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pins-"));
+  const env = { PATH: process.env.PATH, HOME: dir, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" };
+  const git = (...args) => assert.equal(spawnSync("git", args, { cwd: dir, env }).status, 0, `git ${args.join(" ")}`);
+  try {
+    mkdirSync(join(dir, ".github/workflows"), { recursive: true });
+    mkdirSync(join(dir, "callers"));
+    writeFileSync(join(dir, ".github/workflows/a.yml"), wf());
+    git("init", "-q");
+    git("add", ".");
+    git("commit", "-q", "-m", "chore: init");
+    git("tag", "-a", "v1.0.0", "-m", "v1.0.0");
+    const run = (pin, title) => {
+      // A trailing comment is still a pin the check reads.
+      writeFileSync(join(dir, "callers/c.yml"), `jobs:\n  a:\n    uses: o/r/.github/workflows/a.yml@${pin} # floating major\n`);
+      const r = spawnSync("node", [join(REPO_DIR, "scripts/breaking-changes.mjs")], { cwd: dir, env: { ...env, PR_TITLE: title }, encoding: "utf8" });
+      return { status: r.status, log: r.stdout + r.stderr };
+    };
+    assert.equal(run("v1", "fix: x").status, 0, "a patch keeps the base major");
+    const behind = run("v1", "feat!: x");
+    assert.equal(behind.status, 1, "a `!` with the pins left behind fails");
+    assert.match(behind.log, /^::error::This PR releases v2, so every caller in callers\/ must pin @v2\.$/m);
+    assert.match(behind.log, /callers\/c\.yml pins @v1/);
+    assert.equal(run("v2", "feat!: x").status, 0, "a `!` that moves the pins passes");
+    assert.equal(run("v2", "fix: x").status, 1, "a pin ahead of the release calls a tag that never comes");
+    // A `!` merged since the tag but not released yet: release-version.sh bumps once over every
+    // subject, so a later PR of any title releases v2 too, and a second `!` does not make it v3.
+    git("commit", "-q", "--allow-empty", "-m", "feat!: merged, not released");
+    assert.equal(run("v2", "fix: x").status, 0, "the pending major is the one a later patch releases");
+    assert.equal(run("v1", "fix: x").status, 1, "pins left behind a pending major fail");
+    assert.equal(run("v2", "feat!: again").status, 0, "a second `!` before the release bumps nothing more");
+    // Both checks report before the exit: a wrong pin does not hide a broken interface.
+    writeFileSync(join(dir, ".github/workflows/a.yml"), wf({ perms: "      contents: write\n" }));
+    const both = run("v1", "fix: x");
+    assert.equal(both.status, 1, both.log);
+    assert.match(both.log, /must pin @v2[\s\S]*::error::This PR breaks callers/, `both problems reported:\n${both.log}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("the release check runs on every PR change, the title included", () => {
   const src = repoFile(".github/workflows/release-check.yml");
   assert.match(src, /^ {4}types: \[opened, synchronize, reopened, edited\]$/m, "`edited` re-runs it after a title fix");

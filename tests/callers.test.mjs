@@ -13,7 +13,8 @@ console.log();
 console.log("callers");
 
 const CALLERS_DIR = "callers/";
-const WORKFLOWS_DIR = ".github/workflows/";
+// Only the reusable workflows a caller calls are read from here; no caller lives here.
+const REUSABLE_DIR = ".github/workflows/";
 const REMOTE = "fixdings/github-actions/.github/workflows/";
 const manifest = JSON.parse(repoFile(`${CALLERS_DIR}manifest.json`));
 // By installed name: each is installed as .github/workflows/<its file name>.
@@ -35,16 +36,14 @@ const block = (src, head, indent) => {
 };
 const LEVEL = { none: 0, read: 1, write: 2 };
 
-// Every file that calls this repo's workflows at a release is a caller to install, and the
-// manifest names each one once: a caller added without it would never reach a repo.
+// Every caller file in callers/ is a caller to install, and the manifest names each one once:
+// a caller added without it would never reach a repo.
 test("the manifest lists exactly the caller files, each once, with a known group", () => {
   assert.equal(CALLERS.length, manifest.callers.length, "two callers would install under one name");
-  const remoteCallers = [
-    ...readdirSync(join(REPO_DIR, WORKFLOWS_DIR)).map((f) => WORKFLOWS_DIR + f),
-    ...readdirSync(join(REPO_DIR, CALLERS_DIR)).map((f) => CALLERS_DIR + f),
-  ].filter((p) => p.endsWith(".yml") && usesOf(repoFile(p))?.startsWith(REMOTE));
-  assert.deepEqual(remoteCallers.sort(), manifest.callers.map((c) => c.source).sort(),
-    "every file calling fixdings/github-actions at a release must be in callers/manifest.json, and nothing else");
+  const callerFiles = readdirSync(join(REPO_DIR, CALLERS_DIR)).filter((f) => /\.ya?ml$/.test(f)).map((f) => CALLERS_DIR + f);
+  assert.deepEqual(callerFiles.sort(), manifest.callers.map((c) => c.source).sort(),
+    "every workflow file in callers/ must be in callers/manifest.json, and nothing else");
+  for (const p of callerFiles) assert.ok(usesOf(repoFile(p))?.startsWith(REMOTE), `${p}: does not call a released workflow of this repo`);
   for (const c of manifest.callers) assert.ok(["claude", "auto-merge"].includes(c.group), `${c.source}: group ${c.group}`);
 });
 
@@ -55,7 +54,7 @@ test("every caller calls a reusable workflow of this repo, all at one floating m
     const m = uses?.match(new RegExp(`^${REMOTE.replace(/[./]/g, "\\$&")}([\\w-]+\\.yml)@(v\\d+)$`));
     assert.ok(m, `${f}: uses ${uses} — expected ${REMOTE}<file>.yml@v<major>`);
     majors.add(m[2]);
-    const target = WORKFLOWS_DIR + m[1];
+    const target = REUSABLE_DIR + m[1];
     assert.ok(existsSync(join(REPO_DIR, target)), `${f}: ${target} does not exist`);
     assert.match(repoFile(target), /^ {2}workflow_call:$/m, `${f}: ${target} is not a reusable workflow`);
   }
@@ -67,9 +66,11 @@ test("every caller grants each permission its reusable job asks for", () => {
     const src = caller(f);
     const granted = block(src, " {4}permissions:", 6);
     assert.ok(granted, `${f}: no job permissions block`);
-    const target = repoFile(WORKFLOWS_DIR + usesOf(src).split("/").pop().split("@")[0]);
-    const asked = block(target, " {4}permissions:", 6);
-    assert.ok(asked, `${f}: the reusable job declares no permissions`);
+    // Every job's permissions, merged with the workflow level — not just the first job's block.
+    const { permissions: asked, unread } = workflowInterface(repoFile(REUSABLE_DIR + usesOf(src).split("/").pop().split("@")[0]));
+    // A `permissions: write-all` or `{ … }` block is not parsed, so it would drop out silently.
+    assert.deepEqual(unread.filter((u) => u.startsWith("permissions:")), [], `${f}: a permissions block the check cannot read — one entry per line`);
+    assert.ok(Object.keys(asked).length, `${f}: the reusable workflow declares no permissions`);
     for (const [scope, level] of Object.entries(asked)) {
       assert.ok((LEVEL[granted[scope]] ?? 0) >= LEVEL[level],
         `${f}: the reusable job asks for ${scope}: ${level}, the caller grants ${granted[scope] ?? "nothing"} — every run would fail before it starts`);
@@ -82,7 +83,7 @@ test("every caller passes exactly the reusable workflow's secrets by name, and o
   for (const f of CALLERS) {
     const src = caller(f);
     assert.doesNotMatch(src, /secrets: inherit/, `${f}: inherit does not cross owners`);
-    const target = repoFile(WORKFLOWS_DIR + usesOf(src).split("/").pop().split("@")[0]);
+    const target = repoFile(REUSABLE_DIR + usesOf(src).split("/").pop().split("@")[0]);
     const wants = Object.keys(block(target, " {4}secrets:", 6) ?? {});
     const passes = block(src, " {4}secrets:", 6) ?? {};
     assert.deepEqual(Object.keys(passes).sort(), wants.sort(), `${f}: secrets passed vs declared`);
@@ -105,17 +106,10 @@ test("each caller's manifest entry names the repo variables it reads", () => {
   }
 });
 
-// Every caller lives in callers/ and none in .github/workflows/: this repo runs no Claude
-// workflow (no @claude, no review, no fixer, no gate), and there is no second copy to keep in step.
-test("every caller lives in callers/, and this repo runs none of them", () => {
+// Every caller lives in callers/, the one copy there is.
+test("every caller lives in callers/", () => {
   for (const c of manifest.callers) {
     assert.equal(c.source, CALLERS_DIR + basename(c.source), `${c.source}: a caller lives in ${CALLERS_DIR}`);
-    assert.ok(!existsSync(join(REPO_DIR, WORKFLOWS_DIR, basename(c.source))), `${basename(c.source)} would run in this repo`);
-  }
-  // Nor any other file: no workflow here calls a reusable workflow, by release or locally.
-  for (const f of readdirSync(join(REPO_DIR, WORKFLOWS_DIR)).filter((n) => /\.ya?ml$/.test(n))) {
-    assert.doesNotMatch(repoFile(WORKFLOWS_DIR + f), /^\s*uses:\s*["']?(?:fixdings\/github-actions\/|\.\/)\.github\/workflows\//m,
-      `${f} calls a reusable workflow, so this repo would run a Claude workflow`);
   }
 });
 
@@ -141,7 +135,7 @@ test("the tag caller keeps non-working runs out of the shared concurrency group"
   const group = collapsed(concurrencyBlock(caller("claude.yml")));
   // Every run the tag workflow's job `if` rejects goes to the no-op group: the exact negation of
   // that `if`, so a comment without "@claude" cannot take the one pending slot either.
-  const jobIf = collapsed(repoFile(WORKFLOWS_DIR + "tag.yml").match(/^ {4}if: \|\n((?: {6}.*\n)+)/m)[1]).trim();
+  const jobIf = collapsed(repoFile(REUSABLE_DIR + "tag.yml").match(/^ {4}if: \|\n((?: {6}.*\n)+)/m)[1]).trim();
   assert.equal(jobIf, "github.actor != 'claude[bot]' && contains(github.event.comment.body, '@claude')",
     "tag.yml's job if changed — the no-op group below must stay its negation");
   assert.match(group, /\$\{\{ \(github\.actor == 'claude\[bot\]' \|\| !contains\(github\.event\.comment\.body, '@claude'\)\) && format\('claude-noop-/,
@@ -186,7 +180,7 @@ test("the gate and the fixer callers run on workflow_run of the review, by its n
 // The gate and the fixer pin the review by this path in their job `if`, so it is an interface.
 test("the review caller is installed at the path the gate and the fixer pin", () => {
   for (const wf of ["auto-merge.yml", "review-fix.yml"]) {
-    assert.match(repoFile(WORKFLOWS_DIR + wf), /workflow_run\.path == '\.github\/workflows\/claude-code-review\.yml'/, wf);
+    assert.match(repoFile(REUSABLE_DIR + wf), /workflow_run\.path == '\.github\/workflows\/claude-code-review\.yml'/, wf);
   }
   assert.ok(CALLERS.includes("claude-code-review.yml"), "installed under its own name, so at .github/workflows/claude-code-review.yml");
 });
@@ -198,7 +192,7 @@ test("every caller passes each input its workflow requires, and the README docum
   for (const f of CALLERS) {
     const src = caller(f);
     const target = usesOf(src).split("/").pop().split("@")[0];
-    const { inputs } = workflowInterface(repoFile(WORKFLOWS_DIR + target));
+    const { inputs } = workflowInterface(repoFile(REUSABLE_DIR + target));
     const passed = Object.keys(block(src, " {4}with:", 6) ?? {});
     for (const [name, { required }] of Object.entries(inputs)) {
       if (required) assert.ok(passed.includes(name), `${f}: ${target} requires input ${name}, which the caller does not pass`);

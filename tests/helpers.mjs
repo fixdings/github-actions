@@ -10,7 +10,6 @@ import { fileURLToPath } from "node:url";
 // invited a caller to depend on a counter mid-run.
 let passed = 0;
 let failed = 0;
-let skipped = 0;
 
 // An async test's result is not known when `fn()` returns — only that it STARTED. Judging it
 // there printed ✓ and counted a pass for a test that had not run, and a later rejection escaped
@@ -49,21 +48,6 @@ export function test(name, fn) {
   }
 }
 
-/**
- * A test deliberately not run, because it asserts something that is KNOWN BROKEN and tracked.
- *
- * It prints, loudly and every run, rather than disappearing — a silently removed test is
- * indistinguishable from a defect that went away, and this exists precisely for defects that did
- * not. `reason` must name the issue, so the line itself says where to read what is wrong and what
- * removing the skip would prove.
- *
- * Not counted as passed: the summary would then claim coverage the run did not have.
- */
-export function skip(name, _fn, reason = "") {
-  skipped++;
-  console.log(`  ⊘ ${name}${reason ? ` — ${reason}` : ""}`);
-}
-
 // `loadFailures` is counted separately because a file that throws at import never registers
 // a test — reporting "0 failed" next to a file that never ran is how a red build reads green.
 /**
@@ -80,10 +64,7 @@ export async function settle() {
 export function summary(loadFailures = 0) {
   console.log();
   const unloaded = loadFailures ? ` · ${loadFailures} file(s) failed to load` : "";
-  // Skips are reported in the headline, never folded into "passed": a run that skipped a known
-  // defect is not the same as one that proved it fixed.
-  const skips = skipped ? ` · ${skipped} skipped` : "";
-  console.log(`${passed} passed · ${failed} failed${skips}${unloaded}`);
+  console.log(`${passed} passed · ${failed} failed${unloaded}`);
   return { passed, failed, loadFailures, ok: failed === 0 && loadFailures === 0 };
 }
 
