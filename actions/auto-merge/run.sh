@@ -128,6 +128,23 @@ approve_head() {
   fi
 }
 
+# Dismiss the gate's own earlier approvals of any other commit. GitHub counts an approval of
+# an older commit toward required reviews unless the repo dismisses stale ones, so a sensitive
+# PR approved clean and then pushed to must not keep meeting the rule for code the review
+# did not clear. A failed read or dismissal is a warning, never a stop.
+dismiss_stale_approvals() {
+  local ids id
+  ids=$(printf '%s' "$reviews" | jq -rs --arg head "$HEAD_SHA" 'add // [] | .[] | select(.state == "APPROVED" and .user.login == "github-actions[bot]" and .commit_id != $head and (.body // "" | startswith("The Claude review of "))) | .id') || {
+    echo "::warning::Could not read the earlier approvals on PR #$PR."
+    return 0
+  }
+  for id in $ids; do
+    case "$id" in *[!0-9]*) continue ;; esac
+    gh api -X PUT "repos/$GH_REPO/pulls/$PR/reviews/$id/dismissals" -f message="The head moved past the commit this approval cleared." >/dev/null \
+      || echo "::warning::Could not dismiss the gate's earlier approval $id on PR #$PR."
+  done
+}
+
 # 2.9's exception: claude.yml's own PR (`gh pr create` from an issue, so author_association
 # NONE). Trusted only in a PRIVATE repo: there every issue and comment Claude acted on
 # was written by a collaborator, so the diff is an insider's request. In a public repo
@@ -288,10 +305,12 @@ case "$decision" in
     needs_human needs-human "the author is not an owner, member or collaborator, and has no write access" "The verdict was written by a model that read an outside author's diff, so it does not merge on its own."
     exit 0 ;;
   "needs-human sensitive")
+    dismiss_stale_approvals
     needs_human needs-human "it changes sensitive paths" "$(printf '```\n%s\n```' "$hits")"
     exit 0 ;;
   "needs-human sensitive-approve")
     # Approved from the clean verdict alone (no wait on checks): a person merges it.
+    dismiss_stale_approvals
     if approve_head; then approved="The review is clean, so the gate approved $HEAD_SHA; a person merges it."
     else approved="The review is clean, but the gate could not approve $HEAD_SHA: turn on \"Allow GitHub Actions to create and approve pull requests\" (Settings → Actions → General)."; fi
     needs_human needs-human "it changes sensitive paths" "$(printf '%s\n\n```\n%s\n```' "$approved" "$hits")"

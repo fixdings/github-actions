@@ -693,12 +693,12 @@ test("the review workflow checks out the PR head sha, not the merge ref", () => 
 test("no gh api call in a workflow adds a parameter, which would flip it to POST", () => {
   // The auto-merge gate too (defined below): its reads are all GETs, and a `-f since=…` there
   // would POST to the comments endpoint and create nothing but a 404 and a gate-error stop.
-  // A call that spells `-X POST` meant to write (the gate's approval) and is exempt. Lines
+  // A call that spells `-X POST` or `-X PUT` meant to write (the gate's approval, its dismissal) and is exempt. Lines
   // continued with a trailing `\` are joined first, so a parameter on the next line is seen too.
   const libs = readdirSync(join(REPO_DIR, ACTIONS_DIR, "lib")).filter((n) => n.endsWith(".sh")).map((n) => `${ACTIONS_DIR}lib/${n}`);
   for (const wf of [...REUSABLE.map((f) => REUSABLE_DIR + f), ...ACTIONS.map((a) => `${ACTIONS_DIR}${a}/run.sh`), ...libs]) {
     for (const line of readWorkflow(wf).replace(/\\\n/g, " ").split("\n")) {
-      if (!line.includes("gh api") || /gh api\s+-X POST\s/.test(line)) continue;
+      if (!line.includes("gh api") || /gh api\s+-X (?:POST|PUT)\s/.test(line)) continue;
       assert.doesNotMatch(
         line,
         / -(?:f|F|-field|-raw-field) /,
