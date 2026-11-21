@@ -112,6 +112,11 @@ test("every caller lives in callers/, and this repo runs none of them", () => {
     assert.equal(c.source, CALLERS_DIR + basename(c.source), `${c.source}: a caller lives in ${CALLERS_DIR}`);
     assert.ok(!existsSync(join(REPO_DIR, WORKFLOWS_DIR, basename(c.source))), `${basename(c.source)} would run in this repo`);
   }
+  // Nor any other file: no workflow here calls a reusable workflow, by release or locally.
+  for (const f of readdirSync(join(REPO_DIR, WORKFLOWS_DIR)).filter((n) => /\.ya?ml$/.test(n))) {
+    assert.doesNotMatch(repoFile(WORKFLOWS_DIR + f), /^\s*uses:\s*["']?(?:fixdings\/github-actions\/|\.\/)\.github\/workflows\//m,
+      `${f} calls a reusable workflow, so this repo would run a Claude workflow`);
+  }
 });
 
 // The shape each caller owns.
