@@ -43,7 +43,7 @@ gh api "repos/fixdings/github-actions/contents/callers/claude-auto-merge.yml?ref
 
 The target repo also needs:
 - **the Claude GitHub App** installed on it;
-- **the secret** `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`), on the repo or shared from the org;
+- **the secret** `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`), on the repo or shared from the org. A run on a Dependabot PR reads only **Dependabot secrets**, so to review those PRs add the same secret there too (`gh secret set CLAUDE_CODE_OAUTH_TOKEN --app dependabot`). The review admits `dependabot[bot]`, but treats it as an author without write access: the action denies it commands that run repository code, such as the test suite;
 - an **Actions policy** that allows `fixdings/github-actions`, `anthropics/claude-code-action` and `actions/checkout`;
 - for auto-merge: **squash merging** allowed. The gate approves the reviewed commit before it merges, so a repo that requires approvals also needs **"Allow GitHub Actions to create and approve pull requests"** (Settings → Actions → General; on the org first, which otherwise greys it out) and no Code Owners review, which the bot cannot give. With that setting off, the repo needs **0 required approvals**.
 

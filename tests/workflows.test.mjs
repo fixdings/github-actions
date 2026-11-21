@@ -463,6 +463,14 @@ test("the review workflow mints Claude's token without contents: write", () => {
   assert.equal(perms.actions, "read", "dropping this loses mcp__github_ci__*");
 });
 
+// A Dependabot PR's run has dependabot[bot] as actor and author; the action refuses a bot not in
+// `allowed_bots`, so without it every Dependabot PR's review fails before Claude starts. The
+// list stays explicit: `*` would admit any App that can open a PR.
+test("the review admits Claude and Dependabot, and no other bot", () => {
+  const bots = readWorkflow(".github/workflows/review.yml").match(/^ +allowed_bots: "([^"]*)"$/m)?.[1];
+  assert.deepEqual(bots?.split(",").sort(), ["claude[bot]", "dependabot[bot]"], `allowed_bots: ${bots}`);
+});
+
 // The allowlist is a ceiling, and a tool the prompt asks for but cannot get is not an error:
 // headless denies it and the reviewer silently skips that ground. These are the calls the five
 // review dimensions in the prompt name — gh pr list / gh pr view / gh search for comments on
