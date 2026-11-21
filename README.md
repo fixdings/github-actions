@@ -23,7 +23,7 @@ GitHub loads workflows only from the top level of `.github/workflows/`, so the f
 
 ## Installing the callers
 
-`fixdings/claude-setup` (`node cli/setup.mjs github`) installs them: it reads `callers/manifest.json` and copies each file it names, unchanged, into the target repo's `.github/workflows/`. There is one copy of each caller. The three this repo runs on its own PRs live in its `.github/workflows/`; the auto-merge gate, which must not run here, lives in `callers/`.
+An installer reads `callers/manifest.json` and copies each file it names, unchanged, into the target repo's `.github/workflows/`. There is one copy of each caller. The three this repo runs on its own PRs live in its `.github/workflows/`; the auto-merge gate, which must not run here, lives in `callers/`.
 
 | Field | Meaning |
 |---|---|
