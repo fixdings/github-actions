@@ -1,0 +1,35 @@
+name: Claude Auto Merge
+# A `workflow_run` run is recorded against the DEFAULT branch's last commit, not the PR's, so
+# `gh run list --commit <head>` never finds it. The run's title carries the reviewed head sha
+# instead, and `watch-pr` matches the gate's run for a head by its `displayTitle`. (`run-name`
+# may reference the `github` context — workflow syntax docs, "run-name".)
+run-name: Claude Auto Merge · ${{ github.event.workflow_run.head_sha }}
+
+# Caller only: the gate itself is fixdings/github-actions' auto-merge.yml.
+# `workflow_run`, NOT a step in the review workflow: a `pull_request` run executes the PR's own
+# copy of its workflow files, so a PR could rewrite a merge step to merge itself. A `workflow_run`
+# workflow always runs the DEFAULT branch's copy of this file, so nothing in the PR decides
+# whether it merges.
+on:
+  workflow_run:
+    # Matched by NAME, which any workflow can claim — the called job's `if` pins the path too.
+    workflows: [Claude Auto Review with Tracking]
+    types: [completed]
+
+concurrency:
+  group: claude-auto-merge-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+jobs:
+  merge:
+    # The ceiling for the called job, which can only narrow it.
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+      issues: write
+      checks: read
+      statuses: read
+    uses: fixdings/github-actions/.github/workflows/auto-merge.yml@v2
+    with:
+      sensitive-paths: ${{ vars.REVIEW_SENSITIVE_PATHS }}
