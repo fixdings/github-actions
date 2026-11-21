@@ -134,7 +134,8 @@ test("the check holds the callers' pin to the major the PR releases", () => {
     git("commit", "-q", "-m", "chore: init");
     git("tag", "-a", "v1.0.0", "-m", "v1.0.0");
     const run = (pin, title) => {
-      writeFileSync(join(dir, "callers/c.yml"), `jobs:\n  a:\n    uses: o/r/.github/workflows/a.yml@${pin}\n`);
+      // A trailing comment is still a pin the check reads.
+      writeFileSync(join(dir, "callers/c.yml"), `jobs:\n  a:\n    uses: o/r/.github/workflows/a.yml@${pin} # floating major\n`);
       const r = spawnSync("node", [join(REPO_DIR, "scripts/breaking-changes.mjs")], { cwd: dir, env: { ...env, PR_TITLE: title }, encoding: "utf8" });
       return { status: r.status, log: r.stdout + r.stderr };
     };
@@ -145,6 +146,17 @@ test("the check holds the callers' pin to the major the PR releases", () => {
     assert.match(behind.log, /callers\/c\.yml pins @v1/);
     assert.equal(run("v2", "feat!: x").status, 0, "a `!` that moves the pins passes");
     assert.equal(run("v2", "fix: x").status, 1, "a pin ahead of the release calls a tag that never comes");
+    // A `!` merged since the tag but not released yet: release-version.sh bumps once over every
+    // subject, so a later PR of any title releases v2 too, and a second `!` does not make it v3.
+    git("commit", "-q", "--allow-empty", "-m", "feat!: merged, not released");
+    assert.equal(run("v2", "fix: x").status, 0, "the pending major is the one a later patch releases");
+    assert.equal(run("v1", "fix: x").status, 1, "pins left behind a pending major fail");
+    assert.equal(run("v2", "feat!: again").status, 0, "a second `!` before the release bumps nothing more");
+    // Both checks report before the exit: a wrong pin does not hide a broken interface.
+    writeFileSync(join(dir, ".github/workflows/a.yml"), wf({ perms: "      contents: write\n" }));
+    const both = run("v1", "fix: x");
+    assert.equal(both.status, 1, both.log);
+    assert.match(both.log, /must pin @v2[\s\S]*::error::This PR breaks callers/, `both problems reported:\n${both.log}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

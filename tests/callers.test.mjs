@@ -67,7 +67,9 @@ test("every caller grants each permission its reusable job asks for", () => {
     const granted = block(src, " {4}permissions:", 6);
     assert.ok(granted, `${f}: no job permissions block`);
     // Every job's permissions, merged with the workflow level — not just the first job's block.
-    const { permissions: asked } = workflowInterface(repoFile(REUSABLE_DIR + usesOf(src).split("/").pop().split("@")[0]));
+    const { permissions: asked, unread } = workflowInterface(repoFile(REUSABLE_DIR + usesOf(src).split("/").pop().split("@")[0]));
+    // A `permissions: write-all` or `{ … }` block is not parsed, so it would drop out silently.
+    assert.deepEqual(unread.filter((u) => u.startsWith("permissions:")), [], `${f}: a permissions block the check cannot read — one entry per line`);
     assert.ok(Object.keys(asked).length, `${f}: the reusable workflow declares no permissions`);
     for (const [scope, level] of Object.entries(asked)) {
       assert.ok((LEVEL[granted[scope]] ?? 0) >= LEVEL[level],

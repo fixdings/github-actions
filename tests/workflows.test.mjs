@@ -628,8 +628,7 @@ test("the sensitive-path warning step lists exactly the paths the prompt names",
 // Two independent things made CI's count differ from a local one on #97, and only one was the
 // restore. A suite that lints scripts under sh, then repeats for dash and zsh ONLY where
 // present, skips on ubuntu-latest (dash but no zsh) and reports fewer tests in CI than a
-// local run. A reviewer comparing the two reads a
-// five-test gap as tests that vanished with the diff.
+// local run. A reviewer comparing the two reads that gap as tests that vanished with the diff.
 test("the review prompt warns that a CI suite count can be lower than a local one", () => {
   const src = promptBlock(readWorkflow(".github/workflows/review.yml"));
   assert.match(
@@ -699,7 +698,7 @@ test("no gh api call in a workflow adds a parameter, which would flip it to POST
   const libs = readdirSync(join(REPO_DIR, ACTIONS_DIR, "lib")).filter((n) => n.endsWith(".sh")).map((n) => `${ACTIONS_DIR}lib/${n}`);
   for (const wf of [...REUSABLE.map((f) => REUSABLE_DIR + f), ...ACTIONS.map((a) => `${ACTIONS_DIR}${a}/run.sh`), ...libs]) {
     for (const line of readWorkflow(wf).replace(/\\\n/g, " ").split("\n")) {
-      if (!line.includes("gh api") || line.includes("gh api -X POST ")) continue;
+      if (!line.includes("gh api") || /gh api\s+-X POST\s/.test(line)) continue;
       assert.doesNotMatch(
         line,
         / -(?:f|F|-field|-raw-field) /,
