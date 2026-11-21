@@ -14,7 +14,7 @@ Reusable GitHub Actions workflows for the Claude Code integration, and the calle
 ```
 .github/workflows/   the four reusable workflows above, ci.yml, release.yml and release-check.yml (no caller: this repo runs no Claude workflow)
 actions/<name>/      a composite action per scripted step: action.yml and the run.sh it runs
-callers/             manifest.json, listing every caller a repo installs, and the one caller this repo does not run: claude-auto-merge.yml
+callers/             manifest.json, and every caller a repo installs: claude.yml, claude-code-review.yml, claude-review-fix.yml and claude-auto-merge.yml
 scripts/             this repo's own tooling: release-version.sh, breaking-changes.mjs and the workflow-interface.mjs it shares with the tests
 tests/               node tests/all.mjs — no dependencies
 ```
