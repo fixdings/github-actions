@@ -1,9 +1,8 @@
 // The caller workflows a repo installs, listed in callers/manifest.json and fetched from here by
-// a repo's setup: the three this repo runs itself, in .github/workflows/, and the opt-in
-// gate it does not, in callers/. Each calls a reusable workflow of this repo, so the two halves
-// must agree on what crosses between them — the file, the inputs, the secret, and above all the
-// permissions, since a called job can only narrow its caller's and a missing one fails every
-// run before it starts. ONE copy of each: this repo's own callers are the installed files.
+// a repo's setup, all in callers/ — this repo runs none of them. Each calls a reusable workflow
+// of this repo, so the two halves must agree on what crosses between them — the file, the
+// inputs, the secret, and above all the permissions, since a called job can only narrow its
+// caller's and a missing one fails every run before it starts. ONE copy of each.
 import assert from "node:assert/strict";
 import { existsSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -106,14 +105,13 @@ test("each caller's manifest entry names the repo variables it reads", () => {
   }
 });
 
-// This repo runs every caller but the gate, from the released workflows — the files it ships, so
-// there is no second copy to keep in step. The gate must not run here: nothing merges itself.
-test("this repo runs the claude group from .github/workflows/, and the gate is kept out of it", () => {
+// Every caller lives in callers/ and none in .github/workflows/: this repo runs no Claude
+// workflow (no @claude, no review, no fixer, no gate), and there is no second copy to keep in step.
+test("every caller lives in callers/, and this repo runs none of them", () => {
   for (const c of manifest.callers) {
-    const dir = c.group === "claude" ? WORKFLOWS_DIR : CALLERS_DIR;
-    assert.equal(c.source, dir + basename(c.source), `${c.source}: a ${c.group} caller lives in ${dir}`);
+    assert.equal(c.source, CALLERS_DIR + basename(c.source), `${c.source}: a caller lives in ${CALLERS_DIR}`);
+    assert.ok(!existsSync(join(REPO_DIR, WORKFLOWS_DIR, basename(c.source))), `${basename(c.source)} would run in this repo`);
   }
-  assert.ok(!existsSync(join(REPO_DIR, WORKFLOWS_DIR, "claude-auto-merge.yml")), "the gate would merge this repo's own PRs");
 });
 
 // The shape each caller owns.
