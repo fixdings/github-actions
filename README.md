@@ -12,9 +12,9 @@ Reusable GitHub Actions workflows for the Claude Code integration, and the calle
 ## Layout
 
 ```
-.github/workflows/   the four reusable workflows above, three of the callers (this repo runs them too), ci.yml, release.yml and release-check.yml
+.github/workflows/   the four reusable workflows above, ci.yml, release.yml and release-check.yml (no caller: this repo runs no Claude workflow)
 actions/<name>/      a composite action per scripted step: action.yml and the run.sh it runs
-callers/             manifest.json, listing every caller a repo installs, and the one caller this repo does not run: claude-auto-merge.yml
+callers/             manifest.json, and every caller a repo installs: claude.yml, claude-code-review.yml, claude-review-fix.yml and claude-auto-merge.yml
 scripts/             this repo's own tooling: release-version.sh, breaking-changes.mjs and the workflow-interface.mjs it shares with the tests
 tests/               node tests/all.mjs — no dependencies
 ```
@@ -23,7 +23,7 @@ GitHub loads workflows only from the top level of `.github/workflows/`, so the f
 
 ## Installing the callers
 
-An installer reads `callers/manifest.json` and copies each file it names, unchanged, into the target repo's `.github/workflows/`. There is one copy of each caller. The three this repo runs on its own PRs live in its `.github/workflows/`; the auto-merge gate, which must not run here, lives in `callers/`.
+An installer reads `callers/manifest.json` and copies each file it names, unchanged, into the target repo's `.github/workflows/`. There is one copy of each caller, all four in `callers/`, so none of them runs in this repo.
 
 | Field | Meaning |
 |---|---|
@@ -36,7 +36,7 @@ Fetch them from the **floating major tag the callers pin**, `v2`. Every release 
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/fixdings/github-actions/v2/callers/manifest.json
-curl -fsSL https://raw.githubusercontent.com/fixdings/github-actions/v2/.github/workflows/claude.yml   # each `source`
+curl -fsSL https://raw.githubusercontent.com/fixdings/github-actions/v2/callers/claude.yml   # each `source`
 # or, through gh:
 gh api "repos/fixdings/github-actions/contents/callers/claude-auto-merge.yml?ref=v2" -H "Accept: application/vnd.github.raw"
 ```
@@ -58,7 +58,7 @@ A caller owns `on:`, `run-name:`, `concurrency:` and the job `permissions:`. A c
 
 `npm test` runs the suite: no dependencies, Node 24. It checks the workflows' allowlists and prompts, the layout above, that every caller grants what its workflow needs, and runs every action script against a fake `gh`. CI runs it on every PR.
 
-This repo reviews its own PRs with the **released** workflows: its `claude.yml`, `claude-code-review.yml` and `claude-review-fix.yml` are the installed callers, pinned to `@v2` like everyone's. So a change to `review.yml` or `actions/` is first run live once it is released, when every installed caller gets it too; the suite is what holds it before then. A PR that moves the callers to a new major points them at a tag that does not exist yet, so this repo's own Claude runs fail until that PR's release creates it.
+This repo runs no Claude workflow on its own PRs: every caller lives in `callers/`. A change to `review.yml` or `actions/` is first run live once it is released, when every installed caller gets it; the suite is what holds it before then.
 
 ## Versions
 

@@ -1,21 +1,21 @@
 {
-  "description": "The caller workflows a repo installs, fetched by an installer from the floating major tag the callers pin. `source` is the file's path in this repo; it is installed as .github/workflows/<its file name>, unchanged. Each caller's `uses:` names a reusable workflow of this repo at that tag. The three this repo runs itself live in .github/workflows/; callers/ holds the one it does not.",
+  "description": "The caller workflows a repo installs, fetched by an installer from the floating major tag the callers pin. `source` is the file's path in this repo; it is installed as .github/workflows/<its file name>, unchanged. Each caller's `uses:` names a reusable workflow of this repo at that tag. All of them live in callers/, so this repo runs none of them.",
   "secrets": ["CLAUDE_CODE_OAUTH_TOKEN"],
   "callers": [
     {
-      "source": ".github/workflows/claude.yml",
+      "source": "callers/claude.yml",
       "group": "claude",
       "summary": "Runs Claude when a comment says @claude.",
       "vars": []
     },
     {
-      "source": ".github/workflows/claude-code-review.yml",
+      "source": "callers/claude-code-review.yml",
       "group": "claude",
       "summary": "Reviews every PR; keep this file's name and path, the other callers match the review run by both.",
       "vars": ["CLAUDE_CODE_REVIEW_ROUND_BUDGET"]
     },
     {
-      "source": ".github/workflows/claude-review-fix.yml",
+      "source": "callers/claude-review-fix.yml",
       "group": "claude",
       "summary": "Fixes a blocking review round on a PR Claude opened.",
       "vars": []
