@@ -347,6 +347,18 @@ elif [ -n "$pending" ]; then
   exit 0
 fi
 
+# 7b. Approve the reviewed commit, so a repo that requires 1+ approvals can merge it: pinned
+#     by `commit_id`, the approval never lands on a later push. It needs the Actions setting
+#     "Allow GitHub Actions to create and approve pull requests"; without it the approval is
+#     refused, which is only a warning — a repo at 0 approvals merges anyway, and one that
+#     needs it gets the merge refusal below, naming the setting.
+approve_note=""
+if ! gh api -X POST "repos/$GH_REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$HEAD_SHA" \
+    -f body="The Claude review of $HEAD_SHA is clean; approved by the auto-merge gate." >/dev/null; then
+  echo "::warning::Could not approve PR #$PR."
+  approve_note=" The gate's approval was refused too: if the repo requires approvals, turn on \"Allow GitHub Actions to create and approve pull requests\" (Settings → Actions → General)."
+fi
+
 # 8. Merge exactly the reviewed commit: `--match-head-commit` refuses if anything was
 #    pushed since. Step 10 deletes the head branch. Accepted, and
 #    documented: a merge made with GITHUB_TOKEN creates no new workflow run, so
@@ -362,7 +374,7 @@ else
   merge_cmd=(gh pr merge "$PR" --squash --match-head-commit "$HEAD_SHA")
 fi
 if ! "${merge_cmd[@]}"; then
-  needs_human merge-refused "the merge was refused" "\`gh pr merge --squash --match-head-commit $HEAD_SHA\` failed — see the gate run: $gate_link"
+  needs_human merge-refused "the merge was refused" "\`gh pr merge --squash --match-head-commit $HEAD_SHA\` failed — see the gate run: $gate_link.$approve_note"
   exit 0
 fi
 echo "Merged PR #$PR at $HEAD_SHA."
