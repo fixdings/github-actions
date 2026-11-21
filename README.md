@@ -52,7 +52,7 @@ A caller owns `on:`, `run-name:`, `concurrency:` and the job `permissions:`. A c
 ### Inputs
 
 - `review.yml` — `round-budget`, from `vars.CLAUDE_CODE_REVIEW_ROUND_BUDGET`: the round budget shown in the status line. Empty, or anything but a whole number of at least 1, means 3.
-- `auto-merge.yml` — `sensitive-paths`, from `vars.REVIEW_SENSITIVE_PATHS`: a space-separated list of paths that stop a merge. An entry ending in `/` is a directory prefix, an entry with no `/` is a file name at any depth, anything else is an exact path, and a leading `!` makes an exception. Empty means the built-in list: `.github/`, `.claude/` except `.claude/specs/`, and the config files claude-code-action restores from the base branch.
+- `auto-merge.yml` — `sensitive-paths`, from `vars.REVIEW_SENSITIVE_PATHS`: a space-separated list of paths that stop a merge (a clean review of such a PR is still approved, at the reviewed commit, for a person to merge). An entry ending in `/` is a directory prefix, an entry with no `/` is a file name at any depth, anything else is an exact path, and a leading `!` makes an exception. Empty means the built-in list: `.github/`, `.claude/` except `.claude/specs/`, and the config files claude-code-action restores from the base branch.
 
 ## Development
 

@@ -115,6 +115,19 @@ needs_human() {
   echo "PR #$PR needs a human: $1."
 }
 
+# Approve the reviewed commit, pinned by `commit_id`, so the approval never lands on a later
+# push. It needs the Actions setting "Allow GitHub Actions to create and approve pull
+# requests"; without it the approval is refused — a warning, and `approve_note` says why.
+approve_head() {
+  approve_note=""
+  if ! gh api -X POST "repos/$GH_REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$HEAD_SHA" \
+      -f body="The Claude review of $HEAD_SHA is clean; approved by the auto-merge gate." >/dev/null; then
+    echo "::warning::Could not approve PR #$PR."
+    approve_note=" The gate's approval was refused too: if the repo requires approvals, turn on \"Allow GitHub Actions to create and approve pull requests\" (Settings → Actions → General)."
+    return 1
+  fi
+}
+
 # 2.9's exception: claude.yml's own PR (`gh pr create` from an issue, so author_association
 # NONE). Trusted only in a PRIVATE repo: there every issue and comment Claude acted on
 # was written by a collaborator, so the diff is an insider's request. In a public repo
@@ -154,7 +167,15 @@ decide() {
         *) claude_exception || { echo "needs-human outsider"; return; } ;;
       esac ;;
   esac
-  if [ -n "$hits" ]; then echo "needs-human sensitive"; return; fi
+  # A sensitive change with a clean review is approved but never merged: a person merges it.
+  if [ -n "$hits" ]; then
+    if [ "$RUN_CONCLUSION" = success ] && [ "$verdicts" = "VERDICT: CLEAN" ] && [ "${changes:-0}" = 0 ]; then
+      echo "needs-human sensitive-approve"
+    else
+      echo "needs-human sensitive"
+    fi
+    return
+  fi
   if [ "$RUN_CONCLUSION" != success ]; then echo "review-failed run"; return; fi
   count=$(printf '%s' "$verdicts" | grep -c . || true)
   if [ "$count" -ne 1 ]; then echo "review-failed verdict"; return; fi
@@ -269,6 +290,12 @@ case "$decision" in
   "needs-human sensitive")
     needs_human needs-human "it changes sensitive paths" "$(printf '```\n%s\n```' "$hits")"
     exit 0 ;;
+  "needs-human sensitive-approve")
+    # Approved from the clean verdict alone (no wait on checks): a person merges it.
+    if approve_head; then approved="The review is clean, so the gate approved $HEAD_SHA; a person merges it."
+    else approved="The review is clean, but the gate could not approve $HEAD_SHA: turn on \"Allow GitHub Actions to create and approve pull requests\" (Settings → Actions → General)."; fi
+    needs_human needs-human "it changes sensitive paths" "$(printf '%s\n\n```\n%s\n```' "$approved" "$hits")"
+    exit 0 ;;
   "review-failed run")
     needs_human review-failed "the review run failed" "Review run: $run_link"
     exit 0 ;;
@@ -347,17 +374,10 @@ elif [ -n "$pending" ]; then
   exit 0
 fi
 
-# 7b. Approve the reviewed commit, so a repo that requires 1+ approvals can merge it: pinned
-#     by `commit_id`, the approval never lands on a later push. It needs the Actions setting
-#     "Allow GitHub Actions to create and approve pull requests"; without it the approval is
-#     refused, which is only a warning — a repo at 0 approvals merges anyway, and one that
+# 7b. Approve the reviewed commit, so a repo that requires 1+ approvals can merge it. A
+#     refused approval is only a warning — a repo at 0 approvals merges anyway, and one that
 #     needs it gets the merge refusal below, naming the setting.
-approve_note=""
-if ! gh api -X POST "repos/$GH_REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$HEAD_SHA" \
-    -f body="The Claude review of $HEAD_SHA is clean; approved by the auto-merge gate." >/dev/null; then
-  echo "::warning::Could not approve PR #$PR."
-  approve_note=" The gate's approval was refused too: if the repo requires approvals, turn on \"Allow GitHub Actions to create and approve pull requests\" (Settings → Actions → General)."
-fi
+approve_head || true
 
 # 8. Merge exactly the reviewed commit: `--match-head-commit` refuses if anything was
 #    pushed since. Step 10 deletes the head branch. Accepted, and

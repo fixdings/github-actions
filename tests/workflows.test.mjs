@@ -1188,7 +1188,7 @@ test("the gate's decision over fixtures: order, staleness first, no label for a 
   assert.equal(run({ ...claudePr, REPO_PRIVATE: "" }), "needs-human outsider", "an unknown visibility keeps the stop");
   assert.equal(run({ ...claudePr, pr_head_ref: "feature/x" }), "needs-human outsider", "only claude/ branches");
   assert.equal(run({ ...claudePr, pr_author_login: "someone" }), "needs-human outsider", "only claude[bot]");
-  assert.equal(run({ ...claudePr, hits: ".github/workflows/x.yml" }), "needs-human sensitive", "a sensitive path still stops it");
+  assert.equal(run({ ...claudePr, hits: ".github/workflows/x.yml" }), "needs-human sensitive-approve", "a sensitive path still stops it");
   // 2.10: a failed run, and a successful one with no single verdict.
   assert.equal(run({ RUN_CONCLUSION: "failure", verdicts: "" }), "review-failed run");
   assert.equal(run({ verdicts: "" }), "review-failed verdict", "no verdict is no longer a quiet skip");
@@ -1216,7 +1216,14 @@ test("the gate's decision over fixtures: order, staleness first, no label for a 
   // or a sensitive path, so it fails safe — and before either check, which it would make a guess.
   assert.equal(run({ nfiles: "3000", pr_files: "3400" }), "needs-human toomany");
   assert.equal(run({ nfiles: "3000", pr_files: "3400", wf_changed: "", hits: "" }), "needs-human toomany");
-  assert.equal(run({ hits: ".github/x.yml" }), "needs-human sensitive");
+  // A sensitive path never merges; a clean review of it is approved for a person to merge.
+  assert.equal(run({ hits: ".github/x.yml" }), "needs-human sensitive-approve", "clean + sensitive: approve, no merge");
+  for (const over of [{ RUN_CONCLUSION: "failure" }, { verdicts: "" }, { verdicts: "VERDICT: BLOCKING 2" },
+    { verdicts: "VERDICT: CLEAN\nVERDICT: CLEAN" }, { changes: "1" }]) {
+    assert.equal(run({ hits: ".github/x.yml", ...over }), "needs-human sensitive", `no approval for ${JSON.stringify(over)}`);
+  }
+  assert.equal(run({ hits: ".github/x.yml", author: "NONE" }), "needs-human outsider", "an outsider is never approved");
+  assert.equal(run({ hits: ".github/x.yml", wf_changed: "yes" }), "needs-human workflow", "nor an edited review workflow");
   assert.equal(run({ verdicts: "VERDICT: BLOCKING 2" }), "skip blocking", "BLOCKING is the review rounds' to handle");
   // Every outcome is merge, skip, or one of the five tokens.
   for (const over of [{ author: "NONE" }, { RUN_CONCLUSION: "failure" }, { changes: "2" }, { failed: "changed-files" }]) {
@@ -1619,6 +1626,17 @@ test("the gate end to end against a fake gh (Req 2.8, 2.10, 2.12)", () => {
   const away = gate({ over: files([{ filename: "docs/x.md", previous_filename: ".claude/rules/x.md", status: "renamed" }]) });
   assert.match(away.comment, /^\*\*Not merged: needs-human — it changes sensitive paths/);
   assert.ok(away.comment.includes(".claude/rules/x.md"), "the comment names the old path");
+  // A clean review of a sensitive change: approved at the reviewed commit, labelled, not merged.
+  assert.ok(!away.merged && away.labels, `a sensitive change is not merged:\n${away.log}`);
+  assert.equal(away.approved.length, 1, `the clean verdict approves it:\n${away.log}`);
+  assert.match(away.approved[0], /^repos\/o\/r\/pulls\/7\/reviews event=APPROVE commit_id=abc /);
+  assert.match(away.comment, /the gate approved abc; a person merges it/);
+  const awayRefused = gate({ approveFail: true, over: files([{ filename: ".claude/rules/x.md", status: "modified" }]) });
+  assert.ok(!awayRefused.merged && awayRefused.labels && awayRefused.status === 0, awayRefused.log);
+  assert.match(awayRefused.comment, /could not approve abc: turn on "Allow GitHub Actions to create and approve pull requests"/);
+  const awayFailed = gate({ conclusion: "failure", over: files([{ filename: ".claude/rules/x.md", status: "modified" }]) });
+  assert.deepEqual(awayFailed.approved, [], "a failed review of a sensitive change approves nothing");
+  assert.match(awayFailed.comment, /^\*\*Not merged: needs-human — it changes sensitive paths/);
   // pulls/files caps at 3000: a short list fails safe.
   const capped = gate({ over: { "repos/o/r/pulls/7": { ...base["repos/o/r/pulls/7"], changed_files: 3400 } } });
   assert.match(capped.comment, /^\*\*Not merged: needs-human — too many files to check/);
