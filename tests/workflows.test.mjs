@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { REPO_DIR, crossRepo, shorthandAfterGlob, specWorkflowFile, test } from "./helpers.mjs";
+import { REPO_DIR, shorthandAfterGlob, test } from "./helpers.mjs";
 
 console.log();
 console.log("Claude GitHub workflows");
@@ -776,42 +776,8 @@ test("the review prompt names decisions.md (35 · Req 4.6)", () => {
     /against a resolved decision in `decisions\.md` \(or `00-overview\.md` where there is none\)/);
 });
 
-// #213: the round/triage rules are stated once in the plugin (`watch-pr` § Scoring a round) and
-// once more here, because the bot cannot read the plugin. Most findings on #206 were two copies
-// saying the same rule slightly differently, so the lists are PARSED from both and compared in
-// both directions — a kind added to either side without the other goes red.
-crossRepo("the review prompt's round rules agree with watch-pr's Scoring a round", () => {
-  const norm = (s) => s.replace(/\*/g, "").replace(/\s+/g, " ").toLowerCase();
-  const bot = norm(promptBlock(readWorkflow(".github/workflows/review.yml")));
-  const watchSrc = specWorkflowFile("claude/plugins/spec-workflow/skills/watch-pr/SKILL.md");
-  const section = watchSrc.split("## Scoring a round")[1]?.split("\n## ")[0];
-  assert.ok(section, "watch-pr lost its `## Scoring a round` section — this test parses it");
-  const watch = norm(section);
-
-  const kinds = (list) => list.replace(/\s*\([^)]*\)/g, "").split(/,\s*(?:or\s+)?/).map((k) => k.trim()).filter(Boolean).sort();
-  const watchList = watch.match(/\(the same list as the review bot's prompt\): (.*?)\.(?: |$)/);
-  const botList = bot.match(/a finding that is wrong on paper needs no scenario — (.*?); score it on the evidence/);
-  assert.ok(watchList && botList, "the on-paper list changed shape in one copy — this test parses both");
-  assert.deepEqual(kinds(botList[1]), kinds(watchList[1]),
-    "the bot's on-paper kinds and watch-pr's must be the same list");
-
-  assert.match(watch, /runtime defect with a scenario/);
-  assert.match(bot, /runtime-defect finding at 75\+ names its scenario/);
-  for (const [name, text] of [["watch-pr", watch], ["the bot", bot]]) {
-    assert.match(text, /refutes? (?:the|its) scenario/, `${name}: a decline answers by refuting the scenario`);
-    assert.match(text, /quotes? the agreed requirement[^.]*?already on the base branch/,
-      `${name}: a quoted requirement answers only when it is already on the base branch`);
-    assert.match(text, /rule breach whose only consequence is style/, `${name}: a style-only breach never blocks`);
-  }
-  const excuses = (text, re) => [...(text.match(re)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-  const watchExcuses = excuses(watch, /never excuse the defect \(([^)]*)\)/);
-  assert.ok(watchExcuses.length > 0, "watch-pr's excuse list changed shape — this test parses it");
-  assert.deepEqual(excuses(bot, /a reason that only excuses the defect \(([^)]*)\)/), watchExcuses,
-    "an excuse that settles nothing must be the same excuse in both copies");
-});
-
 // The merge workflow is not a Claude workflow (no action step, no allowlist), so it stays out of
-// WORKFLOWS. This repo does not run it (no auto-merge caller here) — `claude-setup github`
+// WORKFLOWS. This repo does not run it (no auto-merge caller here) — a repo's setup
 // installs `callers/claude-auto-merge.yml` where auto-merge is turned on. What it must hold: it runs the DEFAULT branch's copy
 // (workflow_run), it listens to the review workflow by its exact name and pins its path, and
 // its two parsers — the sensitive-path matcher and the verdict counter — answer correctly.

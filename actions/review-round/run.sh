@@ -24,7 +24,7 @@ count=$(gh run list --repo "$REPO" --workflow "${wf##*/}" --branch "$HEAD_REF" -
 # action.yml passes nothing for it.
 # Earlier runs' re-runs stay uncounted: accepted for an informational line.
 n=$((count + ${GITHUB_RUN_ATTEMPT:-1} - 1))
-# The repo variable is set by `claude-setup github` only while auto-merge is on; unset
+# The repo variable is set by the repo's setup only while auto-merge is on; unset
 # (or anything but a whole number >= 1) means no auto-merge, whose budget is 3 — the
 # same rule watch-pr applies when it reads the variable, so the two never disagree.
 default_budget=3

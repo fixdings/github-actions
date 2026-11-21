@@ -1,5 +1,5 @@
 {
-  "description": "The caller workflows a repo installs, fetched by fixdings/claude-setup's github flow from the floating major tag the callers pin. `source` is the file's path in this repo; it is installed as .github/workflows/<its file name>, unchanged. Each caller's `uses:` names a reusable workflow of this repo at that tag. The three this repo runs itself live in .github/workflows/; callers/ holds the one it does not.",
+  "description": "The caller workflows a repo installs, fetched by an installer from the floating major tag the callers pin. `source` is the file's path in this repo; it is installed as .github/workflows/<its file name>, unchanged. Each caller's `uses:` names a reusable workflow of this repo at that tag. The three this repo runs itself live in .github/workflows/; callers/ holds the one it does not.",
   "secrets": ["CLAUDE_CODE_OAUTH_TOKEN"],
   "callers": [
     {

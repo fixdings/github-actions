@@ -1,5 +1,5 @@
 // The caller workflows a repo installs, listed in callers/manifest.json and fetched from here by
-// fixdings/claude-setup: the three this repo runs itself, in .github/workflows/, and the opt-in
+// a repo's setup: the three this repo runs itself, in .github/workflows/, and the opt-in
 // gate it does not, in callers/. Each calls a reusable workflow of this repo, so the two halves
 // must agree on what crosses between them — the file, the inputs, the secret, and above all the
 // permissions, since a called job can only narrow its caller's and a missing one fails every
@@ -116,7 +116,7 @@ test("this repo runs the claude group from .github/workflows/, and the gate is k
   assert.ok(!existsSync(join(REPO_DIR, WORKFLOWS_DIR, "claude-auto-merge.yml")), "the gate would merge this repo's own PRs");
 });
 
-// Ported from claude-setup, which installs these files: the shape each caller owns.
+// The shape each caller owns.
 const collapsed = (s) => s.replace(/\s+/g, " ");
 const concurrencyBlock = (src) => {
   const m = src.match(/^concurrency:\n(?: .*\n|\n)*/m);

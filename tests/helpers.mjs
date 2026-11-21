@@ -1,8 +1,8 @@
 // Shared by every tests/*.test.mjs file: the tiny assert-and-count runner, and the repo
 // root path (tests/ sits at the root, so REPO_DIR is one level up from here). Zero
 // dependencies: the suite runs on a checkout with no node_modules.
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 
@@ -16,7 +16,7 @@ let skipped = 0;
 // there printed ✓ and counted a pass for a test that had not run, and a later rejection escaped
 // the try/catch entirely: Node killed the process with an uncaught exception at whatever point
 // the rejection surfaced, so a red run reported "0 failed" and the crash landed against an
-// arbitrary file — claude-setup's `apply.test.mjs` "flake", where this runner comes from. Async
+// arbitrary file. Async
 // results are collected here and awaited by `settle()` before any summary is printed.
 const pending = [];
 
@@ -90,15 +90,6 @@ export function summary(loadFailures = 0) {
 export const REPO_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 export const repoFile = (rel) => readFileSync(join(REPO_DIR, rel), "utf8");
-
-// The other half of a cross-repo contract (the spec-workflow plugin's `watch-pr`) lives in
-// fixdings/spec-workflow: `$SPEC_WORKFLOW_DIR`, else a sibling `../spec-workflow` checkout.
-// Without it the test is SKIPPED, never passed — a contract with one side missing proves nothing.
-const SPEC_WORKFLOW_ENV = "SPEC_WORKFLOW_DIR";
-export const SPEC_WORKFLOW_DIR = resolve(REPO_DIR, process.env[SPEC_WORKFLOW_ENV] || "../spec-workflow");
-export const specWorkflowFile = (rel) => readFileSync(join(SPEC_WORKFLOW_DIR, rel), "utf8");
-export const crossRepo = (name, fn) =>
-  existsSync(SPEC_WORKFLOW_DIR) ? test(name, fn) : skip(name, fn, `no spec-workflow checkout at ${SPEC_WORKFLOW_DIR} (set ${SPEC_WORKFLOW_ENV})`);
 
 // workflows.test.mjs hand-types the `--allowedTools` rules, and this is the one canonical form
 // they must keep: a rule that already contains a `*` may not spell its tail with the `:*`
