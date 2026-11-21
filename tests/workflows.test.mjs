@@ -671,9 +671,10 @@ test("the review workflow checks out the PR head sha, not the merge ref", () => 
 test("no gh api call in a workflow adds a parameter, which would flip it to POST", () => {
   // The auto-merge gate too (defined below): its reads are all GETs, and a `-f since=…` there
   // would POST to the comments endpoint and create nothing but a 404 and a gate-error stop.
+  // A call that spells `-X POST` meant to write (the gate's approval) and is exempt.
   for (const wf of [...REUSABLE.map((f) => REUSABLE_DIR + f), ...ACTIONS.map((a) => `${ACTIONS_DIR}${a}/run.sh`)]) {
     for (const line of readWorkflow(wf).split("\n")) {
-      if (!line.includes("gh api")) continue;
+      if (!line.includes("gh api") || line.includes("gh api -X POST ")) continue;
       assert.doesNotMatch(
         line,
         / -(?:f|F|-field|-raw-field) /,
@@ -1405,8 +1406,10 @@ test("the gate end to end against a fake gh (Req 2.8, 2.10, 2.12)", () => {
     'case "$1" in',
     "  api)",
     '    shift; jq=""; url=""; method=GET',
-    '    while [ $# -gt 0 ]; do case "$1" in --paginate) ;; --jq) jq=$2; shift ;; -X) method=$2; shift ;; *) url=$1 ;; esac; shift; done',
+    '    fields=""; while [ $# -gt 0 ]; do case "$1" in --paginate) ;; --jq) jq=$2; shift ;; -X) method=$2; shift ;; -f) fields="$fields $2"; shift ;; *) url=$1 ;; esac; shift; done',
     "    f=\"$FAKE_DIR/api/$(printf '%s' \"$url\" | tr -c 'A-Za-z0-9' '_')\"",
+    // The gate's approval: recorded with its fields, or refused when FAKE_APPROVE_FAIL is set.
+    '    if [ "$method" = POST ]; then [ -n "$FAKE_APPROVE_FAIL" ] && { echo "gh: GitHub Actions is not permitted to approve pull requests. (HTTP 422)" >&2; exit 1; }; echo "$url$fields" >> "$FAKE_DIR/approved"; exit 0; fi',
     // 31 · step 10's branch delete: recorded, or refused when the test marks it `.delfail`.
     '    if [ "$method" = DELETE ]; then [ -f "$f.delfail" ] && { echo "gh: Reference does not exist (HTTP 422)" >&2; exit 1; }; echo "$url" >> "$FAKE_DIR/deleted"; exit 0; fi',
     '    [ -f "$f.fail" ] && { echo "gh: Server Error (HTTP 502)" >&2; exit 1; }',
@@ -1422,7 +1425,7 @@ test("the gate end to end against a fake gh (Req 2.8, 2.10, 2.12)", () => {
     '        case "$*" in *--watch*) exit "${FAKE_CHECKS:-0}" ;; esac',
     '        [ -n "$FAKE_CHECKS_FAIL" ] && { echo "$FAKE_CHECKS_FAIL" >&2; exit 1; }',
     '        printf "%s" "$FAKE_CHECKS_JSON"; exit "${FAKE_CHECKS_JSON_RC:-0}" ;;',
-    '      merge) echo merged > "$FAKE_DIR/merged"; while [ $# -gt 0 ]; do [ "$1" = --body-file ] && cp "$2" "$FAKE_DIR/mergebody"; shift; done ;;',
+    '      merge) [ -n "$FAKE_MERGE_FAIL" ] && { echo "gh: At least 1 approving review is required (HTTP 405)" >&2; exit 1; }; echo merged > "$FAKE_DIR/merged"; while [ $# -gt 0 ]; do [ "$1" = --body-file ] && cp "$2" "$FAKE_DIR/mergebody"; shift; done ;;',
     // 31 · step 10's base check: how many open PRs target the head branch.
     '      list) [ -n "$FAKE_BASED_FAIL" ] && { echo "gh: HTTP 502" >&2; exit 1; }; printf "%s\\n" "${FAKE_BASED:-0}" ;;',
     // Step 9's read of the issues the PR closes: FAKE_LINKED is the PR's JSON.
@@ -1441,7 +1444,7 @@ test("the gate end to end against a fake gh (Req 2.8, 2.10, 2.12)", () => {
   ].join("\n");
   const gate = ({ over = {}, fail = [], conclusion = "success", checks = "0", sensitive = "",
     checksJson = [{ name: "review", bucket: "pass" }], checksFail = "", checksJsonRc = "0",
-    linked = [], linkedFail = false, closeFail = "", headBranch = "spec/30-x", based = "0", basedFail = false, delFail = false, repoPrivate = "", issueFail = false } = {}) => {
+    linked = [], linkedFail = false, closeFail = "", headBranch = "spec/30-x", based = "0", basedFail = false, delFail = false, repoPrivate = "", issueFail = false, approveFail = false, mergeFail = false } = {}) => {
     const dir = mkdtempSync(join(tmpdir(), "gate-"));
     try {
       writeFileSync(join(dir, "gh"), fakeGh);
@@ -1469,13 +1472,14 @@ test("the gate end to end against a fake gh (Req 2.8, 2.10, 2.12)", () => {
           }) }),
           FAKE_LINKED_FAIL: linkedFail ? "1" : "", FAKE_CLOSE_FAIL: closeFail,
           HEAD_BRANCH: headBranch, REPO_PRIVATE: repoPrivate, FAKE_BASED: based, FAKE_BASED_FAIL: basedFail ? "1" : "",
-          FAKE_ISSUE_FAIL: issueFail ? "1" : "",
+          FAKE_ISSUE_FAIL: issueFail ? "1" : "", FAKE_APPROVE_FAIL: approveFail ? "1" : "", FAKE_MERGE_FAIL: mergeFail ? "1" : "",
         },
       });
       const read = (f) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : "");
       return { status: r.status, log: r.stdout + r.stderr, comment: read("comment"), labels: read("labels"),
         merged: read("merged") !== "", mergeBody: read("mergebody"), pwned: existsSync(join(dir, "pwned")), timeout: read("timeouts"), calls: read("calls"),
-        closed: read("closed").split("\n").filter(Boolean), deleted: read("deleted").split("\n").filter(Boolean), issue: read("issue") };
+        closed: read("closed").split("\n").filter(Boolean), deleted: read("deleted").split("\n").filter(Boolean), issue: read("issue"),
+        approved: read("approved").split("\n").filter(Boolean) };
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1486,6 +1490,22 @@ test("the gate end to end against a fake gh (Req 2.8, 2.10, 2.12)", () => {
   assert.ok(clean.merged && !clean.comment && !clean.labels, `a clean PR merges quietly:\n${clean.log}`);
   assert.deepEqual(clean.closed, [], "no linked issue, nothing closed");
   assert.ok(!/--subject|--body-file/.test(clean.calls) && !clean.mergeBody, "any other PR keeps GitHub's default squash (26 · Req 5.3)");
+
+  // The gate approves the reviewed commit, pinned by commit_id, before it merges — so a repo
+  // that requires an approval can merge. A refused approval is a warning; a refused merge after
+  // it names the Actions setting.
+  assert.equal(clean.approved.length, 1, `one approval:\n${clean.log}`);
+  assert.match(clean.approved[0], /^repos\/o\/r\/pulls\/7\/reviews event=APPROVE commit_id=abc /, clean.approved[0]);
+  assert.ok(clean.calls.indexOf("reviews -f event=APPROVE") < clean.calls.indexOf("pr merge"), "the approval comes before the merge");
+  const unapproved = gate({ approveFail: true });
+  assert.ok(unapproved.status === 0 && unapproved.merged && !unapproved.labels, `a repo at 0 approvals merges anyway:\n${unapproved.log}`);
+  assert.match(unapproved.log, /::warning::Could not approve PR #7\./);
+  const needsApproval = gate({ approveFail: true, mergeFail: true });
+  assert.ok(!needsApproval.merged && needsApproval.labels, needsApproval.log);
+  assert.match(needsApproval.comment, /^\*\*Not merged: merge-refused — the merge was refused\.\*\*\n[\s\S]*Allow GitHub Actions to create and approve pull requests/);
+  const refusedMerge = gate({ mergeFail: true });
+  assert.ok(!refusedMerge.merged && !/approve pull requests/.test(refusedMerge.comment), "an approved PR's refusal does not blame the setting");
+  assert.deepEqual(gate({ checks: "1", checksJson: [{ name: "lint", bucket: "fail" }] }).approved, [], "a stop approves nothing");
 
   // 26 · Req 5.1–5.2: a land PR (head group/<g>, base main) squashes with its member list.
   const landPr = (body) => ({ "repos/o/r/pulls/7": { ...base["repos/o/r/pulls/7"], head: { sha: "abc", ref: "group/auth" }, body } });

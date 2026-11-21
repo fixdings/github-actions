@@ -23,7 +23,7 @@
     {
       "source": "callers/claude-auto-merge.yml",
       "group": "auto-merge",
-      "summary": "Merges a PR whose review is CLEAN, or labels it needs-human. Opt-in: needs 0 required approvals and squash merging.",
+      "summary": "Merges a PR whose review is CLEAN, or labels it needs-human. Opt-in: needs squash merging, and either 0 required approvals or the Actions setting that lets GitHub Actions approve pull requests (the gate approves before it merges).",
       "vars": ["REVIEW_SENSITIVE_PATHS"]
     }
   ]

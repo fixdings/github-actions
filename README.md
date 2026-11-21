@@ -45,7 +45,7 @@ The target repo also needs:
 - **the Claude GitHub App** installed on it;
 - **the secret** `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`), on the repo or shared from the org;
 - an **Actions policy** that allows `fixdings/github-actions`, `anthropics/claude-code-action` and `actions/checkout`;
-- for auto-merge: **squash merging** allowed and **0 required approvals** (the gate's merge counts as none).
+- for auto-merge: **squash merging** allowed. The gate approves the reviewed commit before it merges, so a repo that requires approvals also needs **"Allow GitHub Actions to create and approve pull requests"** (Settings → Actions → General; on the org first, which otherwise greys it out) and no Code Owners review, which the bot cannot give. With that setting off, the repo needs **0 required approvals**.
 
 A caller owns `on:`, `run-name:`, `concurrency:` and the job `permissions:`. A called job can only narrow `permissions:`, so a caller's block is the ceiling its workflow needs; don't trim it. Keep the review caller's `name:` and its path, `.github/workflows/claude-code-review.yml`: the fixer and the gate match the review run by both.
 
