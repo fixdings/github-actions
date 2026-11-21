@@ -6,17 +6,36 @@
 // at the last release tag with HEAD. Run by .github/workflows/release-check.yml with PR_TITLE;
 // run locally without it, it only lists what it finds.
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { breakingChanges, isReusable, marksBreaking } from "./workflow-interface.mjs";
 
 const DIR = ".github/workflows";
+const CALLERS_DIR = "callers";
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" });
 
 const base = git("tag", "--list", "v[0-9]*.[0-9]*.[0-9]*", "--sort=-v:refname").split("\n")[0];
 if (!base) {
   console.log("No release tag yet: nothing to compare against.");
   process.exit(0);
+}
+
+// The callers must pin the major this PR releases: the base's, or the next one under a `!` title
+// (release-version.sh bumps the major on exactly that). A `!` that leaves the pins behind would
+// publish v<N+1> callers still calling @v<N>; a pin ahead of the release calls a tag that never comes.
+const title = process.env.PR_TITLE;
+if (title !== undefined && existsSync(CALLERS_DIR)) {
+  const major = Number(base.match(/^v(\d+)/)[1]) + (marksBreaking(title) ? 1 : 0);
+  const off = readdirSync(CALLERS_DIR)
+    .filter((f) => /^[\w.-]+\.ya?ml$/.test(f))
+    .flatMap((f) => [...readFileSync(join(CALLERS_DIR, f), "utf8").matchAll(/^\s*uses:\s*\S+\/\.github\/workflows\/\S+@(\S+)\s*$/gm)]
+      .filter((m) => m[1] !== `v${major}`)
+      .map((m) => `  - ${CALLERS_DIR}/${f} pins @${m[1].replace(/[^\w.-]/g, "")}`));
+  if (off.length) {
+    console.log(`::error::This PR releases v${major}, so every caller in ${CALLERS_DIR}/ must pin @v${major}.`);
+    console.log(off.join("\n"));
+    process.exit(1);
+  }
 }
 
 // The reusable workflows among `names`, read by `read`. Names are filtered to plain file names:
@@ -39,7 +58,6 @@ if (!changes.length) {
   process.exit(0);
 }
 const list = changes.map((c) => `  - ${c}`).join("\n");
-const title = process.env.PR_TITLE;
 if (title === undefined) {
   console.log(`Breaks callers written for ${base}:\n${list}`);
 } else if (marksBreaking(title)) {

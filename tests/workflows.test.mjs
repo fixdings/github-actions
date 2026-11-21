@@ -11,9 +11,10 @@ console.log();
 console.log("Claude GitHub workflows");
 
 // The two that run claude-code-action with an allowlist; the gate and the fixer are below.
+const REVIEW_WF = ".github/workflows/review.yml";
 const WORKFLOWS = [
   ".github/workflows/tag.yml",
-  ".github/workflows/review.yml",
+  REVIEW_WF,
 ];
 
 const readWorkflow = (rel) => readFileSync(join(REPO_DIR, rel), "utf8");
@@ -149,6 +150,19 @@ test("every action script and workflow `run:` block is valid shell", () => {
   }
   // Or a change to the layout silently reduces this to a test of nothing.
   assert.ok(checked >= ACTIONS.length + 1, `expected every action script and the fixer's run block, found ${checked}`);
+});
+
+// The review and the fixer hand Claude a workspace holding the actions checkout too; excluding it
+// keeps Grep, Glob and `git status` on the PR alone. Before Claude runs, or it sees the checkout.
+test("the review and the fixer hide the actions checkout from git before Claude runs", () => {
+  for (const f of ["review.yml", "review-fix.yml"]) {
+    const steps = stepBlocks(readWorkflow(REUSABLE_DIR + f));
+    const exclude = steps.findIndex((s) => /^ {8}run: echo "\/\.fixdings-actions\/" >> \.git\/info\/exclude$/m.test(s));
+    const claude = steps.findIndex((s) => /uses: anthropics\/claude-code-action@/.test(s));
+    assert.notEqual(exclude, -1, `${f}: no step adds /.fixdings-actions/ to .git/info/exclude`);
+    assert.notEqual(claude, -1, `${f}: no Claude step found — its spelling changed`);
+    assert.ok(exclude < claude, `${f}: the exclude must be written before Claude runs`);
+  }
 });
 
 // The scripts behind the reusable workflows live in actions/<name>/, and a workflow reaches them
@@ -402,7 +416,8 @@ test("no Claude workflow grants a wildcard rule for an unreviewed program", () =
     // A rule with no `*` matches exactly one command string and cannot be turned into a
     // shell, which is why `Bash(node tests/all.mjs)` is fine and `Bash(node:*)` is not.
     for (const rule of allowedTools(readWorkflow(wf)).filter((r) => r.includes("*"))) {
-      if (pathPinned(rule)) continue;
+      // The one interpreter grant is the review's (claude-code-action.md): elsewhere it is banned.
+      if (pathPinned(rule) && wf === REVIEW_WF) continue;
       assert.ok(
         !grantsUnreviewedProgram(rule),
         `${wf} grants ${rule} — "${commandWord(rule)}" is not in REVIEWED_SAFE, so this rule can run ` +
@@ -611,9 +626,9 @@ test("the sensitive-path warning step lists exactly the paths the prompt names",
 });
 
 // Two independent things made CI's count differ from a local one on #97, and only one was the
-// restore. `tests/scripts-syntax.test.mjs` lints each script under sh, then repeats for dash and
-// zsh ONLY where present; ubuntu-latest has dash but no zsh, so exactly 5 assertions skip and
-// the suite reports 250 where a local run reports 255. A reviewer comparing the two reads a
+// restore. A suite that lints scripts under sh, then repeats for dash and zsh ONLY where
+// present, skips on ubuntu-latest (dash but no zsh) and reports fewer tests in CI than a
+// local run. A reviewer comparing the two reads a
 // five-test gap as tests that vanished with the diff.
 test("the review prompt warns that a CI suite count can be lower than a local one", () => {
   const src = promptBlock(readWorkflow(".github/workflows/review.yml"));
@@ -679,9 +694,11 @@ test("the review workflow checks out the PR head sha, not the merge ref", () => 
 test("no gh api call in a workflow adds a parameter, which would flip it to POST", () => {
   // The auto-merge gate too (defined below): its reads are all GETs, and a `-f since=…` there
   // would POST to the comments endpoint and create nothing but a 404 and a gate-error stop.
-  // A call that spells `-X POST` meant to write (the gate's approval) and is exempt.
-  for (const wf of [...REUSABLE.map((f) => REUSABLE_DIR + f), ...ACTIONS.map((a) => `${ACTIONS_DIR}${a}/run.sh`)]) {
-    for (const line of readWorkflow(wf).split("\n")) {
+  // A call that spells `-X POST` meant to write (the gate's approval) and is exempt. Lines
+  // continued with a trailing `\` are joined first, so a parameter on the next line is seen too.
+  const libs = readdirSync(join(REPO_DIR, ACTIONS_DIR, "lib")).filter((n) => n.endsWith(".sh")).map((n) => `${ACTIONS_DIR}lib/${n}`);
+  for (const wf of [...REUSABLE.map((f) => REUSABLE_DIR + f), ...ACTIONS.map((a) => `${ACTIONS_DIR}${a}/run.sh`), ...libs]) {
+    for (const line of readWorkflow(wf).replace(/\\\n/g, " ").split("\n")) {
       if (!line.includes("gh api") || line.includes("gh api -X POST ")) continue;
       assert.doesNotMatch(
         line,
@@ -761,8 +778,7 @@ test("a # inside a code fence, or a shebang, does not end the tracker", () => {
 });
 
 // Spec PRs never converged: every finding was carried forward, a reasoned decline counted for
-// nothing, and a rule citation shipped at 75 with no likelihood check. The plugin half of the
-// same fix is pinned in plugins.test.mjs.
+// nothing, and a rule citation shipped at 75 with no likelihood check.
 test("the review prompt requires a scenario and settles a reasoned decline", () => {
   const src = collapsed(promptBlock(readWorkflow(".github/workflows/review.yml")));
   assert.match(src, /EVERY RUNTIME-DEFECT FINDING AT 75\+ NAMES ITS SCENARIO/);
@@ -797,11 +813,6 @@ const shellVar = (script, name) => {
   assert.ok(m, `could not extract ${name} — its spelling in the merge workflow changed`);
   return m[1];
 };
-
-test("the merge workflow is valid shell", () => {
-  const r = spawnSync("bash", ["-n"], { input: mergeScript(), encoding: "utf8" });
-  assert.equal(r.status, 0, `the merge workflow's run block is not valid shell\n${r.stderr}`);
-});
 
 // The caller's `on: workflow_run` of the review by name is pinned in callers.test.mjs.
 test("the merge workflow pins the review workflow's path and merges only the reviewed commit", () => {
@@ -1333,10 +1344,16 @@ test("the three readers of a review's tracking comment share one selection", () 
     const src = actionScript(a);
     assert.match(src, /^\. "\$GITHUB_ACTION_PATH\/\.\.\/lib\/run-comment\.sh"$/m, `${a}: sources the shared selection`);
     assert.match(src, /\brun_comment "/, `${a}: calls it`);
-    assert.doesNotMatch(src, /issues\/\$PR\/comments/, `${a}: reads the comments itself — a second copy of the selection`);
   }
-  for (const a of ACTIONS) {
-    assert.doesNotMatch(actionScript(a), /gh label create/, `${a}: creates the needs-human label itself — use label_needs_human`);
+  // Outside actions/lib/, nothing reads the PR's comments or creates the label itself: every
+  // action script and every workflow `run:` block.
+  const shells = [
+    ...ACTIONS.map((a) => [a, actionScript(a)]),
+    ...REUSABLE.flatMap((f) => runBlocks(readWorkflow(REUSABLE_DIR + f)).map((b, i) => [`${f} run block #${i + 1}`, b])),
+  ];
+  for (const [name, src] of shells) {
+    assert.doesNotMatch(src, /issues\/[^/\s"]+\/comments/, `${name}: reads the comments itself — a second copy of the selection`);
+    assert.doesNotMatch(src, /gh label create/, `${name}: creates the needs-human label itself — use label_needs_human`);
   }
 });
 
@@ -1354,10 +1371,12 @@ test("the verify step pages the PR's comments from the attempt's start, as the g
     body: "Claude finished [View job](https://github.com/o/r/actions/runs/99)\n\nRound 2 of 3 · VERDICT: CLEAN\n\n### Review checklist\n- [x] read the diff\n\nVERDICT: CLEAN" };
   const fakeGh = [
     "#!/bin/sh",
-    'shift; jq=""; url=""',
-    'while [ $# -gt 0 ]; do case "$1" in --paginate) ;; --jq) jq=$2; shift ;; *) url=$1 ;; esac; shift; done',
+    'shift; jq=""; url=""; paged=""',
+    'while [ $# -gt 0 ]; do case "$1" in --paginate) paged=1 ;; --jq) jq=$2; shift ;; *) url=$1 ;; esac; shift; done',
     "f=\"$FAKE_DIR/api/$(printf '%s' \"$url\" | tr -c 'A-Za-z0-9' '_')\"",
     '[ -f "$f" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }',
+    // As the API: one page of 100 unless --paginate, so dropping it loses what lies past the first page.
+    `[ -n "$paged" ] || { jq 'if type == "array" then .[0:100] else . end' "$f" > "$f.page"; f="$f.page"; }`,
     'if [ -n "$jq" ]; then exec jq -r "$jq" "$f"; else cat "$f"; fi',
   ].join("\n");
   const verify = (fixtures) => {
@@ -1413,8 +1432,10 @@ test("the gate end to end against a fake gh (Req 2.8, 2.10, 2.12)", () => {
     'echo "$*" >> "$FAKE_DIR/calls"',
     'case "$1" in',
     "  api)",
-    '    shift; jq=""; url=""; method=GET',
-    '    fields=""; while [ $# -gt 0 ]; do case "$1" in --paginate) ;; --jq) jq=$2; shift ;; -X) method=$2; shift ;; -f) fields="$fields $2"; shift ;; *) url=$1 ;; esac; shift; done',
+    // As real gh: a field without `-X` makes the call a POST, so a stray `-f` on a read is caught.
+    '    shift; jq=""; url=""; method=""; paged=""',
+    '    fields=""; while [ $# -gt 0 ]; do case "$1" in --paginate) paged=1 ;; --jq) jq=$2; shift ;; -X) method=$2; shift ;; -f|-F|--field|--raw-field) fields="$fields $2"; shift ;; *) url=$1 ;; esac; shift; done',
+    '    [ -n "$method" ] || { [ -n "$fields" ] && method=POST || method=GET; }',
     "    f=\"$FAKE_DIR/api/$(printf '%s' \"$url\" | tr -c 'A-Za-z0-9' '_')\"",
     // The gate's approval: recorded with its fields, or refused when FAKE_APPROVE_FAIL is set.
     '    if [ "$method" = POST ]; then [ -n "$FAKE_APPROVE_FAIL" ] && { echo "gh: GitHub Actions is not permitted to approve pull requests. (HTTP 422)" >&2; exit 1; }; echo "$url$fields" >> "$FAKE_DIR/approved"; exit 0; fi',
@@ -1422,6 +1443,7 @@ test("the gate end to end against a fake gh (Req 2.8, 2.10, 2.12)", () => {
     '    if [ "$method" = DELETE ]; then [ -f "$f.delfail" ] && { echo "gh: Reference does not exist (HTTP 422)" >&2; exit 1; }; echo "$url" >> "$FAKE_DIR/deleted"; exit 0; fi',
     '    [ -f "$f.fail" ] && { echo "gh: Server Error (HTTP 502)" >&2; exit 1; }',
     '    [ -f "$f" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }',
+    `    [ -n "$paged" ] || { jq 'if type == "array" then .[0:100] else . end' "$f" > "$f.page"; f="$f.page"; }`,
     '    if [ -n "$jq" ]; then exec jq -r "$jq" "$f"; else cat "$f"; fi ;;',
     "  pr)",
     '    case "$2" in',
@@ -1779,16 +1801,13 @@ test("the fix workflow refreshes the PR body from Claude's file, and only from i
 
   const src = readWorkflow(FIX_WORKFLOW);
   const steps = stepBlocks(src);
-  const at = (re) => steps.findIndex((s) => re.test(s));
+  const at = (re) => {
+    const i = steps.findIndex((s) => re.test(s));
+    assert.notEqual(i, -1, `no step matches ${re} — its spelling changed`);
+    return i;
+  };
   assert.ok(at(/name: Refresh the PR body/) < at(/name: Hand the PR to a person/), "the body is fixed before any hand-off comment");
   assert.ok(!allowedTools(src).some((r) => /^Bash\(gh pr edit\b/.test(r)), "Claude itself never holds gh pr edit");
-});
-
-test("the fix workflow is valid shell", () => {
-  for (const [i, block] of fixBlocks().entries()) {
-    const r = spawnSync("bash", ["-n"], { input: block, encoding: "utf8" });
-    assert.equal(r.status, 0, `the fix workflow's run block #${i + 1} is not valid shell\n${r.stderr}`);
-  }
 });
 
 // A workflow edited on a PR branch runs with the repo's secrets on the next push, so only the run
@@ -1840,10 +1859,13 @@ test("the fix workflow runs only for claude/ branches, checking out after the au
   assert.match(src, /workflow_run\.path == '\.github\/workflows\/claude-code-review\.yml'/, "the review's path is pinned");
   assert.match(src, /startsWith\(github\.event\.workflow_run\.head_branch, 'claude\/'\)/, "claude/ branches only");
   const steps = stepBlocks(src);
-  const at = (re) => steps.findIndex((s) => re.test(s));
+  const at = (re) => {
+    const i = steps.findIndex((s) => re.test(s));
+    assert.notEqual(i, -1, `no step matches ${re} — its spelling changed`);
+    return i;
+  };
   // The PR checkout, told apart from the checkout of this repo's actions by its ref.
   const prCheckout = /uses: actions\/checkout@[^\n]*\n\s*with:\n\s*ref: \$\{\{ github\.event\.workflow_run\.head_sha \}\}/;
-  assert.ok(at(prCheckout) !== -1, "no PR checkout found — its spelling changed");
   assert.ok(at(/id: round/) < at(prCheckout), "the PR head is checked out only after the round step vets it");
   for (const s of steps.filter((s) => prCheckout.test(s) || /claude-code-action/.test(s))) {
     assert.match(s, /if: steps\.round\.outputs\.fix == 'yes'/, "checkout and Claude run only when the round step says fix");
@@ -1873,7 +1895,8 @@ test("the fix workflow's round step end to end against a fake gh", () => {
     "  api)",
     '    shift; jq=""; url=""',
     '    while [ $# -gt 0 ]; do case "$1" in --paginate) ;; --jq) jq=$2; shift ;; *) url=$1 ;; esac; shift; done',
-    '    case "$url" in *comments*) f="$FAKE_DIR/comments" ;; *) f="$FAKE_DIR/pr" ;; esac',
+    // Keyed by the exact URL, as the gate's fake is: a wrong endpoint or a dropped `since=` 404s.
+    `    case "$url" in "repos/o/r/issues/7/comments?per_page=100&since=${STARTED}") f="$FAKE_DIR/comments" ;; "repos/o/r/pulls/7") f="$FAKE_DIR/pr" ;; *) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;; esac`,
     '    if [ -n "$jq" ]; then exec jq -r "$jq" "$f"; else cat "$f"; fi ;;',
     "  pr)",
     '    case "$2" in',

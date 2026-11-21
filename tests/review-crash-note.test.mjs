@@ -19,7 +19,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, REPO_DIR } from "./helpers.mjs";
@@ -48,6 +48,8 @@ function extractFunction(name) {
 
 const CRASH_NOTE = extractFunction("crash_note");
 const DIR = mkdtempSync(join(tmpdir(), "crash-note-"));
+// Every test here is synchronous, but all.mjs runs the files in one process: remove it at exit.
+process.on("exit", () => rmSync(DIR, { recursive: true, force: true }));
 
 const fixture = (name, body) => {
   const p = join(DIR, name);
