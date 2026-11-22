@@ -6,6 +6,11 @@ set -eo pipefail
 . "$GITHUB_ACTION_PATH/../lib/run-comment.sh"
 . "$GITHUB_ACTION_PATH/../lib/needs-human.sh"
 
+# Who the gate's approval is from (GITHUB_TOKEN acts as this login) and how its body opens:
+# together they pick out the gate's own approvals, so only those are ever dismissed.
+GATE_BOT='github-actions[bot]'
+GATE_APPROVAL_PREFIX='The Claude review of '
+
 # Entries: a trailing `/` is a directory prefix, no `/` is a file name at any depth,
 # anything else an exact path, a leading `!` an exception. A path is sensitive when a
 # plain entry matches it and no exception does. The default adds the claude-code-action
@@ -121,7 +126,7 @@ needs_human() {
 approve_head() {
   approve_note=""
   if ! gh api -X POST "repos/$GH_REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$HEAD_SHA" \
-      -f body="The Claude review of $HEAD_SHA is clean; approved by the auto-merge gate." >/dev/null; then
+      -f body="${GATE_APPROVAL_PREFIX}$HEAD_SHA is clean; approved by the auto-merge gate." >/dev/null; then
     echo "::warning::Could not approve PR #$PR."
     approve_note=" The gate's approval was refused too: if the repo requires approvals, turn on \"Allow GitHub Actions to create and approve pull requests\" (Settings → Actions → General)."
     return 1
@@ -129,12 +134,13 @@ approve_head() {
 }
 
 # Dismiss the gate's own earlier approvals of any other commit. GitHub counts an approval of
-# an older commit toward required reviews unless the repo dismisses stale ones, so a sensitive
-# PR approved clean and then pushed to must not keep meeting the rule for code the review
-# did not clear. A failed read or dismissal is a warning, never a stop.
+# an older commit toward required reviews unless the repo dismisses stale ones, so a PR
+# approved clean and then pushed to must not keep meeting the rule for code the review did
+# not clear — whatever the gate decides about the new head. A failed read or dismissal is a
+# warning, never a stop.
 dismiss_stale_approvals() {
   local ids id
-  ids=$(printf '%s' "$reviews" | jq -rs --arg head "$HEAD_SHA" 'add // [] | .[] | select(.state == "APPROVED" and .user.login == "github-actions[bot]" and .commit_id != $head and (.body // "" | startswith("The Claude review of "))) | .id') || {
+  ids=$(printf '%s' "$reviews" | jq -rs --arg head "$HEAD_SHA" --arg bot "$GATE_BOT" --arg prefix "$GATE_APPROVAL_PREFIX" 'add // [] | .[] | select(.state == "APPROVED" and .user.login == $bot and .commit_id != $head and (.body // "" | startswith($prefix))) | .id') || {
     echo "::warning::Could not read the earlier approvals on PR #$PR."
     return 0
   }
@@ -282,6 +288,13 @@ fi
 run_link="$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$RUN_ID"
 gate_link="$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
 decision=$(decide)
+# Every decision dismisses the gate's stale approvals — except a stale run's, and a failed PR
+# read's, whose head may have moved: there `HEAD_SHA` is not the head, and the approval the
+# newer run gave the real head would be the one dismissed.
+case "$decision" in
+  "skip stale" | "gate-error pull-request") ;;
+  *) dismiss_stale_approvals ;;
+esac
 case "$decision" in
   "skip stale")
     echo "Skipped: PR #$PR is $pr_state, draft=$pr_draft, on an accepted base=$(case "$pr_base" in "$DEFAULT_BRANCH" | group/*) echo yes ;; *) echo no ;; esac), head moved=$([ "$pr_head" != "$HEAD_SHA" ] && echo yes || echo no)."
@@ -305,12 +318,10 @@ case "$decision" in
     needs_human needs-human "the author is not an owner, member or collaborator, and has no write access" "The verdict was written by a model that read an outside author's diff, so it does not merge on its own."
     exit 0 ;;
   "needs-human sensitive")
-    dismiss_stale_approvals
     needs_human needs-human "it changes sensitive paths" "$(printf '```\n%s\n```' "$hits")"
     exit 0 ;;
   "needs-human sensitive-approve")
     # Approved from the clean verdict alone (no wait on checks): a person merges it.
-    dismiss_stale_approvals
     if approve_head; then approved="The review is clean, so the gate approved $HEAD_SHA; a person merges it."
     else approved="The review is clean, but the gate could not approve $HEAD_SHA: turn on \"Allow GitHub Actions to create and approve pull requests\" (Settings → Actions → General)."; fi
     needs_human needs-human "it changes sensitive paths" "$(printf '%s\n\n```\n%s\n```' "$approved" "$hits")"
