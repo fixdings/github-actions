@@ -1445,6 +1445,8 @@ test("the gate end to end against a fake gh (Req 2.8, 2.10, 2.12)", () => {
     "    f=\"$FAKE_DIR/api/$(printf '%s' \"$url\" | tr -c 'A-Za-z0-9' '_')\"",
     // The gate's approval: recorded with its fields, or refused when FAKE_APPROVE_FAIL is set.
     '    if [ "$method" = POST ]; then [ -n "$FAKE_APPROVE_FAIL" ] && { echo "gh: GitHub Actions is not permitted to approve pull requests. (HTTP 422)" >&2; exit 1; }; echo "$url$fields" >> "$FAKE_DIR/approved"; exit 0; fi',
+    // The gate's dismissal of its own stale approval: recorded, or refused when FAKE_DISMISS_FAIL is set.
+    '    if [ "$method" = PUT ]; then [ -n "$FAKE_DISMISS_FAIL" ] && { echo "gh: HTTP 422" >&2; exit 1; }; echo "$url" >> "$FAKE_DIR/dismissed"; exit 0; fi',
     // 31 · step 10's branch delete: recorded, or refused when the test marks it `.delfail`.
     '    if [ "$method" = DELETE ]; then [ -f "$f.delfail" ] && { echo "gh: Reference does not exist (HTTP 422)" >&2; exit 1; }; echo "$url" >> "$FAKE_DIR/deleted"; exit 0; fi',
     '    [ -f "$f.fail" ] && { echo "gh: Server Error (HTTP 502)" >&2; exit 1; }',
@@ -1480,7 +1482,7 @@ test("the gate end to end against a fake gh (Req 2.8, 2.10, 2.12)", () => {
   ].join("\n");
   const gate = ({ over = {}, fail = [], conclusion = "success", checks = "0", sensitive = "",
     checksJson = [{ name: "review", bucket: "pass" }], checksFail = "", checksJsonRc = "0",
-    linked = [], linkedFail = false, closeFail = "", headBranch = "spec/30-x", based = "0", basedFail = false, delFail = false, repoPrivate = "", issueFail = false, approveFail = false, mergeFail = false } = {}) => {
+    linked = [], linkedFail = false, closeFail = "", headBranch = "spec/30-x", based = "0", basedFail = false, delFail = false, repoPrivate = "", issueFail = false, approveFail = false, mergeFail = false, dismissFail = false } = {}) => {
     const dir = mkdtempSync(join(tmpdir(), "gate-"));
     try {
       writeFileSync(join(dir, "gh"), fakeGh);
@@ -1509,13 +1511,14 @@ test("the gate end to end against a fake gh (Req 2.8, 2.10, 2.12)", () => {
           FAKE_LINKED_FAIL: linkedFail ? "1" : "", FAKE_CLOSE_FAIL: closeFail,
           HEAD_BRANCH: headBranch, REPO_PRIVATE: repoPrivate, FAKE_BASED: based, FAKE_BASED_FAIL: basedFail ? "1" : "",
           FAKE_ISSUE_FAIL: issueFail ? "1" : "", FAKE_APPROVE_FAIL: approveFail ? "1" : "", FAKE_MERGE_FAIL: mergeFail ? "1" : "",
+          FAKE_DISMISS_FAIL: dismissFail ? "1" : "",
         },
       });
       const read = (f) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : "");
       return { status: r.status, log: r.stdout + r.stderr, comment: read("comment"), labels: read("labels"),
         merged: read("merged") !== "", mergeBody: read("mergebody"), pwned: existsSync(join(dir, "pwned")), timeout: read("timeouts"), calls: read("calls"),
         closed: read("closed").split("\n").filter(Boolean), deleted: read("deleted").split("\n").filter(Boolean), issue: read("issue"),
-        approved: read("approved").split("\n").filter(Boolean) };
+        approved: read("approved").split("\n").filter(Boolean), dismissed: read("dismissed").split("\n").filter(Boolean) };
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1542,6 +1545,34 @@ test("the gate end to end against a fake gh (Req 2.8, 2.10, 2.12)", () => {
   const refusedMerge = gate({ mergeFail: true });
   assert.ok(!refusedMerge.merged && !/approve pull requests/.test(refusedMerge.comment), "an approved PR's refusal does not blame the setting");
   assert.deepEqual(gate({ checks: "1", checksJson: [{ name: "lint", bucket: "fail" }] }).approved, [], "a stop approves nothing");
+
+  // The gate's approval of an older commit is dismissed whatever it decides about the head —
+  // a stop, a BLOCKING skip, or a merge — but never by a stale run, whose HEAD_SHA is not the head.
+  // Only the gate's own approvals go: not a human's, not one of the head, not another bot text.
+  const REVIEWS = "repos/o/r/pulls/7/reviews?per_page=100";
+  const approval = (id, commit_id, login = "github-actions[bot]", body = `The Claude review of ${commit_id} is clean; approved by the auto-merge gate.`) =>
+    ({ id, state: "APPROVED", commit_id, user: { login }, body });
+  const oldApprovals = { [REVIEWS]: [approval(11, "old"), approval(12, "abc"), approval(13, "old", "alice"), approval(14, "old", "github-actions[bot]", "LGTM")] };
+  const blocking = { [`repos/o/r/issues/7/comments?per_page=100&since=${STARTED}`]: [
+    { id: 1, user: { login: "claude[bot]" }, created_at: "2026-10-06T10:00:05Z",
+      body: "Claude finished [View job](https://github.com/o/r/actions/runs/99)\n\nVERDICT: BLOCKING 1" }] };
+  const dismissedOf = (r) => r.dismissed.map((u) => u.replace(/^repos\/o\/r\/pulls\/7\/reviews\//, ""));
+  for (const [what, opts] of [
+    ["a merge", {}],
+    ["a BLOCKING skip", { over: blocking }],
+    ["a failed review", { conclusion: "failure" }],
+    ["an edited review workflow", { over: { "repos/o/r/pulls/7/files?per_page=100": [{ filename: WF }] } }],
+    ["a red check", { checks: "1", checksJson: [{ name: "lint", bucket: "fail" }] }],
+  ]) {
+    const r = gate({ ...opts, over: { ...oldApprovals, ...opts.over } });
+    assert.equal(r.status, 0, r.log);
+    assert.deepEqual(dismissedOf(r), ["11/dismissals"], `${what} dismisses the gate's stale approval, and only it:\n${r.log}`);
+  }
+  const moved = gate({ over: { ...oldApprovals, "repos/o/r/pulls/7": { ...base["repos/o/r/pulls/7"], head: { ...base["repos/o/r/pulls/7"].head, sha: "new" } } } });
+  assert.deepEqual(moved.dismissed, [], `a stale run dismisses nothing:\n${moved.log}`);
+  const refusedDismiss = gate({ over: oldApprovals, dismissFail: true });
+  assert.ok(refusedDismiss.status === 0 && refusedDismiss.merged, `a refused dismissal is only a warning:\n${refusedDismiss.log}`);
+  assert.match(refusedDismiss.log, /::warning::Could not dismiss the gate's earlier approval 11 on PR #7\./);
 
   // 26 · Req 5.1–5.2: a land PR (head group/<g>, base main) squashes with its member list.
   const landPr = (body) => ({ "repos/o/r/pulls/7": { ...base["repos/o/r/pulls/7"], head: { sha: "abc", ref: "group/auth" }, body } });
