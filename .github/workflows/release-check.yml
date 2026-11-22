@@ -1,5 +1,5 @@
-## Every merge releases, and the PR title picks the bump (see release.yml). This fails a PR whose
-## change would break installed callers — a reusable workflow removed or renamed, an input or
+## Every merge that changes something a caller runs releases, and the PR title picks the bump
+## (see release.yml). This fails a PR whose change would break installed callers — a reusable workflow removed or renamed, an input or
 ## secret removed or newly required, a job permission added — when its title has no `!`.
 ## `edited` re-runs it when only the title changes. This repo's only; nothing calls it.
 name: Release check
