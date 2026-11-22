@@ -64,7 +64,7 @@ This repo's own PRs run the released callers, installed in `.github/workflows/`,
 
 Callers pin the floating major. `v1` keeps the old `reusable-claude*.yml` file names; `v2` renamed them to the four above.
 
-Every merge into `main` is released by `.github/workflows/release.yml`. The conventional-commit type in the squash commit's subject, the PR title, picks the bump; the body never does:
+Every merge into `main` that changes something a caller runs (the reusable workflows, `actions/` or `callers/`) is released by `.github/workflows/release.yml`; a docs- or test-only merge waits, and its subject counts in the next release's bump. The conventional-commit type in the squash commit's subject, the PR title, picks the bump; the body never does:
 
 | Subject | Release |
 |---|---|

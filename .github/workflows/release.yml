@@ -1,7 +1,8 @@
-## Every merge into main is a release: the suite runs, scripts/release-version.sh works out the
-## version from the commit messages since the last tag, and the job tags it, moves the floating
-## major callers pin (`v1`, `v2`) to it and publishes a GitHub Release whose notes list the PRs
-## merged since the previous version. This repo's only; nothing calls it.
+## Every merge into main that changes something a caller runs is a release (`SHIPPED` in
+## scripts/release-version.sh): the suite runs, the script works out the version from the
+## commit messages since the last tag, and the job tags it, moves the floating major callers
+## pin (`v1`, `v2`) to it and publishes a GitHub Release whose notes list the PRs merged since
+## the previous version. This repo's only; nothing calls it.
 ##
 ## A merge made with GITHUB_TOKEN starts no `push` workflow, and this repo runs the auto-merge
 ## gate, which merges with it: so a finished gate run releases too. It runs the default branch's

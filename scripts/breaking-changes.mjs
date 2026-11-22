@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Fails a PR that breaks installed callers without saying so. Every merge releases, and only a
-// `!` in the title makes that release a new major — so a removed workflow, a new required input
+// Fails a PR that breaks installed callers without saying so. Every merge that changes
+// something a caller runs releases, and only a `!` in the title makes that release a new major — so a removed workflow, a new required input
 // or secret, or a new job permission under a patch title would move the floating major under
 // every installed caller and fail their runs before they start. Compares the reusable workflows
 // at the last release tag with HEAD. Run by .github/workflows/release-check.yml with PR_TITLE;
