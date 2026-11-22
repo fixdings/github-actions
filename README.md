@@ -12,7 +12,7 @@ Reusable GitHub Actions workflows for the Claude Code integration, and the calle
 ## Layout
 
 ```
-.github/workflows/   the four reusable workflows above, ci.yml, release.yml and release-check.yml (no caller: this repo runs no Claude workflow)
+.github/workflows/   the four reusable workflows above, ci.yml, release.yml and release-check.yml, plus installed copies of the callers, pinned to the released major
 actions/<name>/      a composite action per scripted step: action.yml and the run.sh it runs
 callers/             manifest.json, and every caller a repo installs: claude.yml, claude-code-review.yml, claude-review-fix.yml and claude-auto-merge.yml
 scripts/             this repo's own tooling: release-version.sh, breaking-changes.mjs and the workflow-interface.mjs it shares with the tests
@@ -58,7 +58,7 @@ A caller owns `on:`, `run-name:`, `concurrency:` and the job `permissions:`. A c
 
 `npm test` runs the suite: no dependencies, Node 24. It checks the workflows' allowlists and prompts, the layout above, that every caller grants what its workflow needs, and runs every action script against a fake `gh`. CI runs it on every PR.
 
-This repo runs no Claude workflow on its own PRs: every caller lives in `callers/`. A change to `review.yml` or `actions/` is first run live once it is released, when every installed caller gets it; the suite is what holds it before then.
+This repo's own PRs run the released callers, installed in `.github/workflows/`, never the PR's copy. A change to `review.yml` or `actions/` is first run live once it is released, when every installed caller gets it; the suite is what holds it before then.
 
 ## Versions
 

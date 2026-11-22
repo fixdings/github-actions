@@ -3,9 +3,9 @@
 // git repos; the workflow around it is checked for the parts that decide what reaches callers.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { REPO_DIR, repoFile, test } from "./helpers.mjs";
 
 console.log();
@@ -16,8 +16,9 @@ const WORKFLOW = ".github/workflows/release.yml";
 const releaseStep = () => repoFile(WORKFLOW).match(/run: \|\n((?: {10}.*\n| *\n)*)/)[1].replace(/^ {10}/gm, "");
 
 // A repo with the given tag on its first commit (or each of several tags on a commit of its own,
-// in order) and these commit messages after it, isolated from the user's git config (signing,
-// hooks, templates).
+// in order) and these commits after it, isolated from the user's git config (signing, hooks,
+// templates). A commit is a message, which changes a shipped file, or [message, path].
+const SHIPPED_FILE = "actions/x/run.sh";
 const release = (tags, messages) => {
   const dir = mkdtempSync(join(tmpdir(), "release-"));
   const env = {
@@ -35,7 +36,13 @@ const release = (tags, messages) => {
       if (i > 0) git("commit", "-q", "--allow-empty", "-m", `chore: ${tag}`);
       git("tag", "-a", tag, "-m", tag);
     }
-    for (const m of messages) git("commit", "-q", "--allow-empty", "-m", m);
+    for (const [i, c] of messages.entries()) {
+      const [m, path] = [c].flat().concat(SHIPPED_FILE);
+      mkdirSync(dirname(join(dir, path)), { recursive: true });
+      writeFileSync(join(dir, path), `${i}\n`, { flag: "a" });
+      git("add", "--", path);
+      git("commit", "-q", "-m", m);
+    }
     const out = join(dir, "out");
     writeFileSync(out, "");
     const r = spawnSync("bash", [SCRIPT], { cwd: dir, env: { ...env, GITHUB_OUTPUT: out }, encoding: "utf8" });
@@ -95,9 +102,39 @@ test("an already released HEAD is written out again, to finish it; no tag at all
   assert.match(none.log, /::error::No vX\.Y\.Z tag/);
 });
 
+// Only a change a caller runs releases; anything else waits, and still counts in the next bump.
+test("a merge that changes nothing a caller runs releases nothing", () => {
+  for (const path of ["README.md", "tests/x.test.mjs", "scripts/x.sh", ".claude/rules/x.md", ".github/workflows/ci.yml",
+    ".github/workflows/claude-auto-merge.yml"]) {
+    const r = release("v1.0.0", [["fix: x", path]]);
+    assert.equal(r.status, 0, r.log);
+    assert.equal(r.version, undefined, `${path} is not shipped`);
+    assert.match(r.log, /Nothing a caller runs changed since v1\.0\.0/);
+  }
+  const src = repoFile("scripts/release-version.sh");
+  const shipped = src.match(/^SHIPPED=\(\n([\s\S]*?)^\)$/m)[1].trim().split(/\s+/);
+  for (const path of shipped) {
+    const file = path.endsWith("/") ? `${path}x` : path;
+    assert.equal(release("v1.0.0", [["fix: x", file]]).version, "v1.0.1", `${file} is shipped`);
+  }
+  // Every reusable workflow is shipped: a new one must be added to the list.
+  const reusable = readdirSync(join(REPO_DIR, ".github/workflows"))
+    .filter((n) => /^ {2}workflow_call:$/m.test(repoFile(`.github/workflows/${n}`))).map((n) => `.github/workflows/${n}`);
+  assert.deepEqual(shipped.filter((p) => p.startsWith(".github/")).sort(), reusable.sort(), "SHIPPED lists every reusable workflow");
+  assert.ok(shipped.includes("actions/") && shipped.includes("callers/"), "the actions and the callers are shipped");
+  // A docs-only feat waits, and its subject moves the next shipped release.
+  assert.equal(release("v1.0.0", [["feat: docs", "README.md"], "fix: x"]).version, "v1.1.0", "the waiting feat still counts");
+});
+
 test("the release workflow tests, then tags main, moves the major under a lease and writes notes", () => {
   const src = repoFile(WORKFLOW);
   assert.match(src, /^on:\n {2}push:\n {4}branches: \[main\]\n/m, "releases only from main");
+  // The gate merges with GITHUB_TOKEN, which starts no push run: its finished run releases.
+  assert.match(src, /^ {2}workflow_run:\n {4}workflows: \[(.+)\]\n {4}types: \[completed\]\n/m, "a gate merge releases");
+  const gate = src.match(/^ {4}workflows: \[(.+)\]$/m)[1];
+  assert.equal(gate, repoFile(".github/workflows/claude-auto-merge.yml").match(/^name: (.+)$/m)[1], "named as the gate caller is");
+  assert.match(src, /^ {2}workflow_dispatch:$/m, "a release can be re-run by hand");
+  assert.doesNotMatch(src, /^ {4}if:/m, "no conclusion filter: a gate run can fail after its merge");
   assert.match(src, /^permissions:\n {2}contents: write\n\n/m, "tags and releases, nothing more");
   assert.match(src, /cancel-in-progress: false/, "a release run is never cancelled mid-push");
   assert.match(src, /fetch-depth: 0/, "the bump reads every message since the last tag");
