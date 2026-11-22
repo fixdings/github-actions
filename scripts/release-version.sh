@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The next release, from the conventional-commit subjects since the last version tag. Run by
-# .github/workflows/release.yml on every push to main; writes `version`, `previous` and `major`
+# .github/workflows/release.yml on every push to main and every finished auto-merge gate run; writes `version`, `previous` and `major`
 # to $GITHUB_OUTPUT.
 #
 #   feat!: / fix(x)!: …   → major  (a renamed file, input or secret)
@@ -14,6 +14,19 @@
 # A HEAD that IS the latest version is written out again, so a re-run of a release that failed
 # after tagging (the major not moved, the release not published) finishes it rather than skipping.
 set -eo pipefail
+
+# What a caller runs: the reusable workflows, the actions they check out at `job.workflow_sha`,
+# and the callers an installer copies. A merge that changes none of them (docs, tests, this
+# repo's own tooling) releases nothing; its subject still counts in the next release's bump.
+# tests/release.test.mjs holds the workflow list equal to every `workflow_call` file.
+SHIPPED=(
+  .github/workflows/auto-merge.yml
+  .github/workflows/review-fix.yml
+  .github/workflows/review.yml
+  .github/workflows/tag.yml
+  actions/
+  callers/
+)
 
 # Highest first by version order, not by date: a fix tagged on an older major after a newer one
 # must not become the base.
@@ -30,6 +43,9 @@ if [ "$(git rev-parse "$prev^{commit}")" = "$(git rev-parse HEAD)" ]; then
   echo "HEAD is already $version: finishing its release, if a run left it unfinished."
 elif [ -z "$(git rev-list "$prev..HEAD")" ]; then
   echo "HEAD is behind $prev: nothing to release."
+  exit 0
+elif git diff --quiet "$prev" HEAD -- "${SHIPPED[@]}"; then
+  echo "Nothing a caller runs changed since $prev: nothing to release."
   exit 0
 else
   subjects=$(git log --format=%s "$prev..HEAD")
