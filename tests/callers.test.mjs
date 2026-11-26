@@ -106,6 +106,16 @@ test("each caller's manifest entry names the repo variables it reads", () => {
   }
 });
 
+test("each caller's manifest entry names the secrets it passes, and the top-level list is their union", () => {
+  const union = new Set();
+  for (const c of manifest.callers) {
+    const passed = Object.keys(block(repoFile(c.source), " {4}secrets:", 6) ?? {});
+    assert.deepEqual(passed.sort(), [...(c.secrets ?? [])].sort(), `${c.source}: secrets`);
+    for (const s of passed) union.add(s);
+  }
+  assert.deepEqual([...union].sort(), [...manifest.secrets].sort(), "manifest.json secrets are the union of the callers' secrets");
+});
+
 // Every caller lives in callers/, the one copy there is.
 test("every caller lives in callers/", () => {
   for (const c of manifest.callers) {

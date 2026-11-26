@@ -6,25 +6,29 @@
       "source": "callers/claude.yml",
       "group": "claude",
       "summary": "Runs Claude when a comment says @claude.",
-      "vars": []
+      "vars": [],
+      "secrets": ["CLAUDE_CODE_OAUTH_TOKEN"]
     },
     {
       "source": "callers/claude-code-review.yml",
       "group": "claude",
       "summary": "Reviews every PR; keep this file's name and path, the other callers match the review run by both.",
-      "vars": ["CLAUDE_CODE_REVIEW_ROUND_BUDGET"]
+      "vars": ["CLAUDE_CODE_REVIEW_ROUND_BUDGET"],
+      "secrets": ["CLAUDE_CODE_OAUTH_TOKEN"]
     },
     {
       "source": "callers/claude-review-fix.yml",
       "group": "claude",
       "summary": "Fixes a blocking review round on a PR Claude opened.",
-      "vars": []
+      "vars": [],
+      "secrets": ["CLAUDE_CODE_OAUTH_TOKEN"]
     },
     {
       "source": "callers/claude-auto-merge.yml",
       "group": "auto-merge",
-      "summary": "Merges a PR whose review is CLEAN, or labels it needs-human. Opt-in: needs squash merging, and either 0 required approvals or the Actions setting that lets GitHub Actions approve pull requests (the gate approves before it merges).",
-      "vars": ["REVIEW_SENSITIVE_PATHS", "FIXDINGS_APP_CLIENT_ID"]
+      "summary": "Merges a PR whose review is CLEAN, or labels it needs-human. Opt-in: needs squash merging, and either 0 required approvals, a GitHub App the gate acts as (FIXDINGS_APP_CLIENT_ID + FIXDINGS_APP_PRIVATE_KEY, optional), or the Actions setting that lets GitHub Actions approve pull requests (the gate approves before it merges).",
+      "vars": ["REVIEW_SENSITIVE_PATHS", "FIXDINGS_APP_CLIENT_ID"],
+      "secrets": ["FIXDINGS_APP_PRIVATE_KEY"]
     }
   ]
 }

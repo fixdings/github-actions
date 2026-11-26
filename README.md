@@ -30,7 +30,8 @@ An installer reads `callers/manifest.json` and copies each file it names, unchan
 | `callers[].source` | The file's path in this repo. It is installed as `.github/workflows/<its file name>`. |
 | `callers[].group` | `claude`: the three installed together. `auto-merge`: the opt-in gate. |
 | `callers[].vars` | Repo variables the caller reads; all optional. |
-| `secrets` | Repo or org secrets the callers pass on. |
+| `callers[].secrets` | Repo or org secrets the caller passes on. `CLAUDE_CODE_OAUTH_TOKEN` is required; `FIXDINGS_APP_PRIVATE_KEY` is optional. |
+| `secrets` | Every secret any caller passes on: the union of `callers[].secrets`. |
 
 Fetch them from the **floating major tag the callers pin**, `v2`. Every release moves that tag, so this always gets the latest callers, and they call the workflows of the same release line. The repo is public, so no token is needed:
 
