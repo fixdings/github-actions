@@ -4,19 +4,15 @@
 ## pin (`v1`, `v2`) to it and publishes a GitHub Release whose notes list the PRs merged since
 ## the previous version. This repo's only; nothing calls it.
 ##
-## A merge made with GITHUB_TOKEN starts no `push` workflow, and this repo runs the auto-merge
-## gate, which merges with it: so a finished gate run releases too. It runs the default branch's
-## copy of this file on the default branch's HEAD, never PR code. Most gate runs merge nothing;
-## then HEAD is the last release, and the run only confirms it is finished. `workflow_dispatch`
-## (which GITHUB_TOKEN can always start) re-runs a release by hand.
+## Only a push to main releases: the auto-merge gate merges with the fixdings app's token, and
+## a merge made with an app token starts a `push` run like a person's merge. Should the gate
+## fall back to GITHUB_TOKEN (a failed mint), its merge starts no run, and the next push or
+## `workflow_dispatch` releases it.
 name: Release
 
 on:
   push:
     branches: [main]
-  workflow_run:
-    workflows: [Claude Auto Merge]
-    types: [completed]
   workflow_dispatch:
 
 # Tags and the release.
@@ -30,8 +26,6 @@ concurrency:
 
 jobs:
   release:
-    # Whatever the gate run's conclusion: it can fail in a step after its merge, and the version
-    # is worked out from main's HEAD alone.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
