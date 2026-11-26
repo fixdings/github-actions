@@ -480,11 +480,12 @@ test("the review workflow mints Claude's token without contents: write", () => {
 
 // A Dependabot PR's run has dependabot[bot] as actor and author; the action refuses a bot not in
 // `allowed_bots`, so without it every Dependabot PR's review fails before Claude starts. A PR a
-// workflow opened with GITHUB_TOKEN has github-actions[bot] the same way. The list stays
-// explicit: `*` would admit any App that can open a PR.
-test("the review admits Claude, Dependabot and GitHub Actions, and no other bot", () => {
+// workflow opened with GITHUB_TOKEN has github-actions[bot] the same way, and one the org's app
+// readied has fixdings[bot] as actor. The list stays explicit: `*` would admit any App that can
+// open a PR.
+test("the review admits Claude, Dependabot, GitHub Actions and the fixdings app, and no other bot", () => {
   const bots = readWorkflow(".github/workflows/review.yml").match(/^ +allowed_bots: "([^"]*)"$/m)?.[1];
-  assert.deepEqual(bots?.split(",").sort(), ["claude[bot]", "dependabot[bot]", "github-actions[bot]"], `allowed_bots: ${bots}`);
+  assert.deepEqual(bots?.split(",").sort(), ["claude[bot]", "dependabot[bot]", "fixdings[bot]", "github-actions[bot]"], `allowed_bots: ${bots}`);
 });
 
 // The allowlist is a ceiling, and a tool the prompt asks for but cannot get is not an error:
