@@ -1482,7 +1482,7 @@ test("the gate end to end against a fake gh (Req 2.8, 2.10, 2.12)", () => {
   ].join("\n");
   const gate = ({ over = {}, fail = [], conclusion = "success", checks = "0", sensitive = "",
     checksJson = [{ name: "review", bucket: "pass" }], checksFail = "", checksJsonRc = "0",
-    linked = [], linkedFail = false, closeFail = "", headBranch = "spec/30-x", based = "0", basedFail = false, delFail = false, repoPrivate = "", issueFail = false, approveFail = false, mergeFail = false, dismissFail = false } = {}) => {
+    linked = [], linkedFail = false, closeFail = "", headBranch = "spec/30-x", based = "0", basedFail = false, delFail = false, repoPrivate = "", issueFail = false, approveFail = false, mergeFail = false, dismissFail = false, gateBot = "" } = {}) => {
     const dir = mkdtempSync(join(tmpdir(), "gate-"));
     try {
       writeFileSync(join(dir, "gh"), fakeGh);
@@ -1511,7 +1511,7 @@ test("the gate end to end against a fake gh (Req 2.8, 2.10, 2.12)", () => {
           FAKE_LINKED_FAIL: linkedFail ? "1" : "", FAKE_CLOSE_FAIL: closeFail,
           HEAD_BRANCH: headBranch, REPO_PRIVATE: repoPrivate, FAKE_BASED: based, FAKE_BASED_FAIL: basedFail ? "1" : "",
           FAKE_ISSUE_FAIL: issueFail ? "1" : "", FAKE_APPROVE_FAIL: approveFail ? "1" : "", FAKE_MERGE_FAIL: mergeFail ? "1" : "",
-          FAKE_DISMISS_FAIL: dismissFail ? "1" : "",
+          FAKE_DISMISS_FAIL: dismissFail ? "1" : "", GATE_BOT: gateBot,
         },
       });
       const read = (f) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : "");
@@ -1573,6 +1573,11 @@ test("the gate end to end against a fake gh (Req 2.8, 2.10, 2.12)", () => {
   const refusedDismiss = gate({ over: oldApprovals, dismissFail: true });
   assert.ok(refusedDismiss.status === 0 && refusedDismiss.merged, `a refused dismissal is only a warning:\n${refusedDismiss.log}`);
   assert.match(refusedDismiss.log, /::warning::Could not dismiss the gate's earlier approval 11 on PR #7\./);
+  // Acting as a caller's GitHub App, the gate dismisses its app approvals AND the ones GITHUB_TOKEN
+  // left before the repo moved to the app — never another app's or a person's.
+  const asApp = gate({ gateBot: "fixdings[bot]", over: { [REVIEWS]: [...oldApprovals[REVIEWS], approval(15, "old", "fixdings[bot]"), approval(16, "old", "other[bot]")] } });
+  assert.equal(asApp.status, 0, asApp.log);
+  assert.deepEqual(dismissedOf(asApp).sort(), ["11/dismissals", "15/dismissals"], `the app's and GITHUB_TOKEN's stale approvals go:\n${asApp.log}`);
 
   // 26 · Req 5.1–5.2: a land PR (head group/<g>, base main) squashes with its member list.
   const landPr = (body) => ({ "repos/o/r/pulls/7": { ...base["repos/o/r/pulls/7"], head: { sha: "abc", ref: "group/auth" }, body } });

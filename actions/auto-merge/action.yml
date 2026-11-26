@@ -4,12 +4,19 @@ inputs:
   sensitive-paths:
     description: The caller's `vars.REVIEW_SENSITIVE_PATHS`; empty means the built-in list.
     default: ""
+  token:
+    description: The token the gate reads, approves and merges with. Defaults to GITHUB_TOKEN.
+    default: ${{ github.token }}
+  gate-bot:
+    description: The login `token` acts as, when it is not GITHUB_TOKEN (a GitHub App's `<slug>[bot]`).
+    default: ""
 runs:
   using: composite
   steps:
     - shell: bash
       env:
-        GH_TOKEN: ${{ github.token }}
+        GH_TOKEN: ${{ inputs.token }}
+        GATE_BOT: ${{ inputs.gate-bot }}
         GH_REPO: ${{ github.repository }}
         PR: ${{ github.event.workflow_run.pull_requests[0].number }}
         HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
