@@ -29,6 +29,13 @@ on:
         description: The caller's `vars.REVIEW_SENSITIVE_PATHS`; empty means the built-in list.
         type: string
         default: ""
+      app-client-id:
+        description: The caller's `vars.FIXDINGS_APP_CLIENT_ID`; empty means the gate runs as GITHUB_TOKEN.
+        type: string
+        default: ""
+    secrets:
+      FIXDINGS_APP_PRIVATE_KEY:
+        required: false
 
 jobs:
   merge:
@@ -53,7 +60,30 @@ jobs:
       issues: write
       checks: read
       statuses: read
+    # `secrets` cannot be read in a step's `if:`, so whether the key arrived is carried in `env`.
+    # A run on a Dependabot PR reads Dependabot secrets only, so there it is usually empty.
+    env:
+      APP_KEY_SET: ${{ secrets.FIXDINGS_APP_PRIVATE_KEY != '' }}
     steps:
+      # The gate acts as the caller's GitHub App when it has one: an app's approval does not need
+      # "Allow GitHub Actions to create and approve pull requests", which an org can lock off.
+      # Narrowed to this repo and to the job's own permissions. A mint that fails (the app is not
+      # installed here, a wrong key) falls back to GITHUB_TOKEN with a warning, never a stop.
+      - name: Mint the gate's app token
+        id: app
+        if: inputs.app-client-id != '' && env.APP_KEY_SET == 'true'
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ inputs.app-client-id }}
+          private-key: ${{ secrets.FIXDINGS_APP_PRIVATE_KEY }}
+          permission-actions: read
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+          permission-checks: read
+          permission-statuses: read
+
       # This repo's actions/ at the commit of THIS workflow file. `job.workflow_*` names the called
       # workflow where `github.*` names the caller, so the scripts are always the ones this file
       # shipped with — never `@v2`, which floats, nor the caller's checkout. Sparse, non-cone, so
@@ -73,3 +103,5 @@ jobs:
         uses: ./.fixdings-actions/actions/auto-merge
         with:
           sensitive-paths: ${{ inputs.sensitive-paths }}
+          token: ${{ steps.app.outputs.token || github.token }}
+          gate-bot: ${{ steps.app.outputs.token && format('{0}[bot]', steps.app.outputs.app-slug) || '' }}

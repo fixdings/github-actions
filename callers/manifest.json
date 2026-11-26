@@ -1,6 +1,6 @@
 {
   "description": "The caller workflows a repo installs, fetched by an installer from the floating major tag the callers pin. `source` is the file's path in this repo; it is installed as .github/workflows/<its file name>, unchanged. Each caller's `uses:` names a reusable workflow of this repo at that tag. All of them live in callers/, so this repo runs none of them.",
-  "secrets": ["CLAUDE_CODE_OAUTH_TOKEN"],
+  "secrets": ["CLAUDE_CODE_OAUTH_TOKEN", "FIXDINGS_APP_PRIVATE_KEY"],
   "callers": [
     {
       "source": "callers/claude.yml",
@@ -24,7 +24,7 @@
       "source": "callers/claude-auto-merge.yml",
       "group": "auto-merge",
       "summary": "Merges a PR whose review is CLEAN, or labels it needs-human. Opt-in: needs squash merging, and either 0 required approvals or the Actions setting that lets GitHub Actions approve pull requests (the gate approves before it merges).",
-      "vars": ["REVIEW_SENSITIVE_PATHS"]
+      "vars": ["REVIEW_SENSITIVE_PATHS", "FIXDINGS_APP_CLIENT_ID"]
     }
   ]
 }

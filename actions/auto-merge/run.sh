@@ -6,9 +6,13 @@ set -eo pipefail
 . "$GITHUB_ACTION_PATH/../lib/run-comment.sh"
 . "$GITHUB_ACTION_PATH/../lib/needs-human.sh"
 
-# Who the gate's approval is from (GITHUB_TOKEN acts as this login) and how its body opens:
-# together they pick out the gate's own approvals, so only those are ever dismissed.
-GATE_BOT='github-actions[bot]'
+# Who the gate's approval is from and how its body opens: together they pick out the gate's own
+# approvals, so only those are ever dismissed. GITHUB_TOKEN acts as `github-actions[bot]`; a
+# caller's GitHub App token as `<slug>[bot]`, which auto-merge.yml passes in as GATE_BOT. The
+# GITHUB_TOKEN login stays the gate's too, so approvals left before a repo moved to an app (or
+# by a run that fell back to GITHUB_TOKEN) are still dismissed.
+TOKEN_BOT='github-actions[bot]'
+GATE_BOT="${GATE_BOT:-$TOKEN_BOT}"
 GATE_APPROVAL_PREFIX='The Claude review of '
 
 # Entries: a trailing `/` is a directory prefix, no `/` is a file name at any depth,
@@ -140,7 +144,7 @@ approve_head() {
 # warning, never a stop.
 dismiss_stale_approvals() {
   local ids id
-  ids=$(printf '%s' "$reviews" | jq -rs --arg head "$HEAD_SHA" --arg bot "$GATE_BOT" --arg prefix "$GATE_APPROVAL_PREFIX" 'add // [] | .[] | select(.state == "APPROVED" and .user.login == $bot and .commit_id != $head and (.body // "" | startswith($prefix))) | .id') || {
+  ids=$(printf '%s' "$reviews" | jq -rs --arg head "$HEAD_SHA" --arg bot "$GATE_BOT" --arg tokenbot "$TOKEN_BOT" --arg prefix "$GATE_APPROVAL_PREFIX" 'add // [] | .[] | select(.state == "APPROVED" and (.user.login == $bot or .user.login == $tokenbot) and .commit_id != $head and (.body // "" | startswith($prefix))) | .id') || {
     echo "::warning::Could not read the earlier approvals on PR #$PR."
     return 0
   }

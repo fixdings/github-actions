@@ -44,8 +44,12 @@ gh api "repos/fixdings/github-actions/contents/callers/claude-auto-merge.yml?ref
 The target repo also needs:
 - **the Claude GitHub App** installed on it;
 - **the secret** `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`), on the repo or shared from the org. A run on a Dependabot PR reads only **Dependabot secrets**, so to review those PRs add the same secret there too (`gh secret set CLAUDE_CODE_OAUTH_TOKEN --app dependabot`). The review admits `dependabot[bot]`, but treats it as an author without write access: the action denies it commands that run repository code, such as the test suite;
-- an **Actions policy** that allows `fixdings/github-actions`, `anthropics/claude-code-action` and `actions/checkout`;
-- for auto-merge: **squash merging** allowed. The gate approves the reviewed commit before it merges, so a repo that requires approvals also needs **"Allow GitHub Actions to create and approve pull requests"** (Settings → Actions → General; on the org first, which otherwise greys it out) and no Code Owners review, which the bot cannot give. With that setting off, the repo needs **0 required approvals**.
+- an **Actions policy** that allows `fixdings/github-actions`, `anthropics/claude-code-action` and `actions/checkout` (plus `actions/create-github-app-token` for the gate's app token, below);
+- for auto-merge: **squash merging** allowed. The gate approves the reviewed commit before it merges, so a repo that requires approvals needs one of:
+  - **a GitHub App the gate acts as** (optional, and the way past an org that locks the setting below off): the repo variable `FIXDINGS_APP_CLIENT_ID` (the app's Client ID) and the secret `FIXDINGS_APP_PRIVATE_KEY` (its private key), on the repo or shared from the org. The app is the caller's own, installed on the repo, with repository permissions Contents, Pull requests and Issues **write** and Actions, Checks and Commit statuses **read**. Without both values, or when the token cannot be minted, the gate runs as `GITHUB_TOKEN`. A Dependabot PR's run reads only Dependabot secrets, so add the key there too to cover those;
+  - or **"Allow GitHub Actions to create and approve pull requests"** (Settings → Actions → General; on the org first, which otherwise greys it out).
+
+  Either way, no Code Owners review, which the bot cannot give. With neither, the repo needs **0 required approvals**.
 
 A caller owns `on:`, `run-name:`, `concurrency:` and the job `permissions:`. A called job can only narrow `permissions:`, so a caller's block is the ceiling its workflow needs; don't trim it. Keep the review caller's `name:` and its path, `.github/workflows/claude-code-review.yml`: the fixer and the gate match the review run by both.
 
@@ -53,6 +57,7 @@ A caller owns `on:`, `run-name:`, `concurrency:` and the job `permissions:`. A c
 
 - `review.yml` — `round-budget`, from `vars.CLAUDE_CODE_REVIEW_ROUND_BUDGET`: the round budget shown in the status line. Empty, or anything but a whole number of at least 1, means 3.
 - `auto-merge.yml` — `sensitive-paths`, from `vars.REVIEW_SENSITIVE_PATHS`: a space-separated list of paths that stop a merge (a clean review of such a PR is still approved, at the reviewed commit, for a person to merge). An entry ending in `/` is a directory prefix, an entry with no `/` is a file name at any depth, anything else is an exact path, and a leading `!` makes an exception. Empty means the built-in list: `.github/`, `.claude/` except `.claude/specs/`, and the config files claude-code-action restores from the base branch.
+- `auto-merge.yml` — `app-client-id`, from `vars.FIXDINGS_APP_CLIENT_ID`, with the secret `FIXDINGS_APP_PRIVATE_KEY`: the GitHub App the gate reads, approves and merges as. Empty means `GITHUB_TOKEN`.
 
 ## Development
 
