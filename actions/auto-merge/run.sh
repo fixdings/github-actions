@@ -155,10 +155,23 @@ dismiss_stale_approvals() {
   done
 }
 
-# 2.9's exception: claude.yml's own PR (`gh pr create` from an issue, so author_association
-# NONE). Trusted only in a PRIVATE repo: there every issue and comment Claude acted on
-# was written by a collaborator, so the diff is an insider's request. In a public repo
-# anyone can write the issue Claude follows. Step 11 files such a PR's leftovers.
+# 2.9's exception, for the bots a repo runs: a PR opened by GITHUB_TOKEN (a workflow), by
+# Claude, by Dependabot or by the gate's own app reads as author_association NONE. Trusted
+# only in a PRIVATE repo: there only the workflows and the apps installed on the repo act as
+# these bots, and an outsider cannot even see it, so the diff is an insider's request. In a
+# public repo anyone can write the issue or comment such a bot acts on. Any
+# other bot, and every other outsider, still stops.
+DEPENDABOT_BOT='dependabot[bot]'
+trusted_bot() {
+  [ "$REPO_PRIVATE" = true ] && [ -n "$pr_author_login" ] || return 1
+  case "$pr_author_login" in
+    "$TOKEN_BOT" | "$CLAUDE_BOT" | "$DEPENDABOT_BOT" | "$GATE_BOT") return 0 ;;
+  esac
+  return 1
+}
+
+# claude.yml's own PR (`gh pr create` from an issue): `claude[bot]` from a `claude/` branch in
+# a private repo, which `trusted_bot` admits. Step 11 files such a PR's leftovers.
 claude_exception() {
   case "$REPO_PRIVATE/$pr_author_login/$pr_head_ref" in
     "true/$CLAUDE_BOT/claude/"*) return 0 ;;
@@ -191,7 +204,7 @@ decide() {
     *)
       case "$author_perm" in
         admin | write) ;;
-        *) claude_exception || { echo "needs-human outsider"; return; } ;;
+        *) trusted_bot || { echo "needs-human outsider"; return; } ;;
       esac ;;
   esac
   # A sensitive change with a clean review is approved but never merged: a person merges it.

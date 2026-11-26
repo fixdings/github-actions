@@ -479,11 +479,12 @@ test("the review workflow mints Claude's token without contents: write", () => {
 });
 
 // A Dependabot PR's run has dependabot[bot] as actor and author; the action refuses a bot not in
-// `allowed_bots`, so without it every Dependabot PR's review fails before Claude starts. The
-// list stays explicit: `*` would admit any App that can open a PR.
-test("the review admits Claude and Dependabot, and no other bot", () => {
+// `allowed_bots`, so without it every Dependabot PR's review fails before Claude starts. A PR a
+// workflow opened with GITHUB_TOKEN has github-actions[bot] the same way. The list stays
+// explicit: `*` would admit any App that can open a PR.
+test("the review admits Claude, Dependabot and GitHub Actions, and no other bot", () => {
   const bots = readWorkflow(".github/workflows/review.yml").match(/^ +allowed_bots: "([^"]*)"$/m)?.[1];
-  assert.deepEqual(bots?.split(",").sort(), ["claude[bot]", "dependabot[bot]"], `allowed_bots: ${bots}`);
+  assert.deepEqual(bots?.split(",").sort(), ["claude[bot]", "dependabot[bot]", "github-actions[bot]"], `allowed_bots: ${bots}`);
 });
 
 // The allowlist is a ceiling, and a tool the prompt asks for but cannot get is not an error:
@@ -1126,11 +1127,13 @@ const runFn = (fnSrc, call, env) => {
   const r = spawnSync("bash", ["-e"], { input: `${fnSrc}\n${call}\n`, encoding: "utf8", env: { PATH: process.env.PATH, ...env } });
   return { status: r.status, out: r.stdout, err: r.stderr };
 };
-// `decide` with the 2.9 exception it calls, which step 11 shares.
-const decideFn = () => `${shellFn(mergeScript(), "claude_exception")}\n${shellFn(mergeScript(), "decide")}`;
+// `decide` with the 2.9 exception it calls, and the bot logins that exception reads.
+const shellConst = (name, src = mergeScript()) => new RegExp(`^${name}='([^']*)'$`, "m").exec(src)?.[1];
+const decideFn = () => `${shellFn(mergeScript(), "trusted_bot")}\n${shellFn(mergeScript(), "decide")}`;
 // A PR the gate merges: every fact as the reads report it for a clean, unmoved, insider PR.
 const CLEAN_FACTS = {
-  CLAUDE_BOT: /^CLAUDE_BOT='([^']*)'$/m.exec(readWorkflow(`${ACTIONS_DIR}lib/run-comment.sh`))?.[1],
+  CLAUDE_BOT: shellConst("CLAUDE_BOT", readWorkflow(`${ACTIONS_DIR}lib/run-comment.sh`)),
+  TOKEN_BOT: shellConst("TOKEN_BOT"), DEPENDABOT_BOT: shellConst("DEPENDABOT_BOT"), GATE_BOT: "fixdings[bot]",
   failed: "", pr_state: "open", pr_draft: "false", pr_head: "abc", pr_base: "main", author: "MEMBER",
   wf_changed: "", nfiles: "1", pr_files: "1", hits: "", changes: "0", verdicts: "VERDICT: CLEAN",
   HEAD_SHA: "abc", DEFAULT_BRANCH: "main", RUN_CONCLUSION: "success", is_land: "", members: "",
@@ -1180,14 +1183,28 @@ test("the gate's decision over fixtures: order, staleness first, no label for a 
   for (const author_perm of ["read", "none", ""]) {
     assert.equal(run({ author: "CONTRIBUTOR", author_perm }), "needs-human outsider", `${author_perm || "(unread)"} access is not`);
   }
-  // claude.yml's own PR (author_association NONE): trusted only in a private repo, as claude[bot],
-  // from a claude/ branch — in a public repo anyone can write the issue Claude acted on.
+  // A bot's PR (author_association NONE): trusted only in a private repo, and only the repo's own
+  // bots — in a public repo anyone can write the issue or comment a bot acts on.
   const claudePr = { author: "NONE", pr_author_login: "claude[bot]", pr_head_ref: "claude/issue-7-1", REPO_PRIVATE: "true" };
   assert.equal(run(claudePr), "merge", "Claude's PR in a private repo merges");
   assert.equal(run({ ...claudePr, REPO_PRIVATE: "false" }), "needs-human outsider", "a public repo keeps the stop");
   assert.equal(run({ ...claudePr, REPO_PRIVATE: "" }), "needs-human outsider", "an unknown visibility keeps the stop");
-  assert.equal(run({ ...claudePr, pr_head_ref: "feature/x" }), "needs-human outsider", "only claude/ branches");
-  assert.equal(run({ ...claudePr, pr_author_login: "someone" }), "needs-human outsider", "only claude[bot]");
+  assert.equal(run({ ...claudePr, pr_author_login: "someone" }), "needs-human outsider", "only a listed bot");
+  for (const login of ["github-actions[bot]", "claude[bot]", "dependabot[bot]", "fixdings[bot]"]) {
+    const botPr = { author: "NONE", pr_author_login: login, pr_head_ref: "feature/x" };
+    assert.equal(run({ ...botPr, REPO_PRIVATE: "true" }), "merge", `${login} is trusted in a private repo, from any branch`);
+    for (const REPO_PRIVATE of ["false", ""]) {
+      assert.equal(run({ ...botPr, REPO_PRIVATE }), "needs-human outsider", `${login} stops in a repo whose private is ${REPO_PRIVATE || "(unread)"}`);
+    }
+  }
+  assert.equal(run({ author: "NONE", pr_author_login: "other[bot]", GATE_BOT: "other[bot]", REPO_PRIVATE: "true" }), "merge",
+    "the gate's bot is whichever app the caller passed in");
+  for (const pr_author_login of ["renovate[bot]", "jane-doe", ""]) {
+    assert.equal(run({ author: "NONE", pr_author_login, REPO_PRIVATE: "true" }), "needs-human outsider",
+      `${pr_author_login || "(unread login)"} is an outsider even in a private repo`);
+  }
+  assert.equal(run({ author: "NONE", pr_author_login: "", GATE_BOT: "", REPO_PRIVATE: "true" }), "needs-human outsider",
+    "an unread login never matches an empty bot name");
   assert.equal(run({ ...claudePr, hits: ".github/workflows/x.yml" }), "needs-human sensitive-approve", "a sensitive path still stops it");
   // 2.10: a failed run, and a successful one with no single verdict.
   assert.equal(run({ RUN_CONCLUSION: "failure", verdicts: "" }), "review-failed run");
@@ -1811,6 +1828,17 @@ test("the gate end to end against a fake gh (Req 2.8, 2.10, 2.12)", () => {
   const publicRepo = gate({ over: claudePr, repoPrivate: "false", headBranch: "claude/issue-7-1" });
   assert.ok(!publicRepo.merged, "a public repo keeps the outsider stop");
   assert.match(publicRepo.comment, /^\*\*Not merged: needs-human — the author is not an owner/);
+  // The other trusted bots merge in a private repo; their leftovers stay claude.yml's alone.
+  const botPr = (login) => ({ ...withLeftovers, "repos/o/r/pulls/7": { ...base["repos/o/r/pulls/7"], author_association: "NONE",
+    head: { sha: "abc", ref: "feature/x" }, user: { login } } });
+  for (const [login, gateBot] of [["dependabot[bot]", ""], ["github-actions[bot]", ""], ["fixdings[bot]", "fixdings[bot]"], ["claude[bot]", ""]]) {
+    const r = gate({ over: botPr(login), repoPrivate: "true", headBranch: "feature/x", gateBot });
+    assert.ok(r.merged && !r.labels, `${login}'s PR in a private repo merges:\n${r.log}`);
+    assert.equal(r.issue, "", `${login}'s PR from feature/x files no leftovers`);
+  }
+  const renovate = gate({ over: botPr("renovate[bot]"), repoPrivate: "true", headBranch: "feature/x" });
+  assert.ok(!renovate.merged, "an unlisted bot is an outsider");
+  assert.match(renovate.log, /Outsider: author_association=NONE, permission=none, login=renovate\[bot\]\./);
 });
 
 // The review fixer: agent mode on `workflow_run`, so it is not in WORKFLOWS (track_progress is
