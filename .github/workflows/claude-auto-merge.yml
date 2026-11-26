@@ -33,3 +33,6 @@ jobs:
     uses: fixdings/github-actions/.github/workflows/auto-merge.yml@v2
     with:
       sensitive-paths: ${{ vars.REVIEW_SENSITIVE_PATHS }}
+      app-client-id: ${{ vars.FIXDINGS_APP_CLIENT_ID }}
+    secrets:
+      FIXDINGS_APP_PRIVATE_KEY: ${{ secrets.FIXDINGS_APP_PRIVATE_KEY }}
