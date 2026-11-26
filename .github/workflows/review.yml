@@ -96,8 +96,10 @@ jobs:
           # bot counts as an author without write access (docs/security.md), so the action
           # denies it the commands that run repo code — `node tests/*` included. Never `*`.
           # github-actions[bot] is the author of a PR a workflow opened with GITHUB_TOKEN;
-          # fixdings[bot], the org's app, is the actor when it readies a PR or acts for the repo.
-          allowed_bots: "claude[bot],dependabot[bot],fixdings[bot],github-actions[bot]"
+          # fixdings[bot], the org's app, is the actor when it readies a PR or acts for the repo;
+          # fixdings-releaser[bot] is the author of a release workflow's PR (a PR opened with
+          # GITHUB_TOKEN gets `action_required` runs, so release workflows open it as this app).
+          allowed_bots: "claude[bot],dependabot[bot],fixdings-releaser[bot],fixdings[bot],github-actions[bot]"
           # KEEP use_commit_signing: true. It is not about HOW a commit is made — it is what
           # keeps the git write tools OUT of this reviewer. `src/modes/tag/index.ts:148` adds
           # `Bash(git add:*)`, `Bash(git commit:*)`, `Bash(git rm:*)` and the push wrapper to the
