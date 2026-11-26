@@ -156,16 +156,18 @@ dismiss_stale_approvals() {
 }
 
 # 2.9's exception, for the bots a repo runs: a PR opened by GITHUB_TOKEN (a workflow), by
-# Claude, by Dependabot or by the gate's own app reads as author_association NONE. Trusted
+# Claude, by Dependabot, by the gate's own app or by the org's release app (a release workflow's
+# PR, opened with its token so the PR's runs start) reads as author_association NONE. Trusted
 # only in a PRIVATE repo: there only the workflows and the apps installed on the repo act as
 # these bots, and an outsider cannot even see it, so the diff is an insider's request. In a
 # public repo anyone can write the issue or comment such a bot acts on. Any
 # other bot, and every other outsider, still stops.
 DEPENDABOT_BOT='dependabot[bot]'
+RELEASER_BOT='fixdings-releaser[bot]'
 trusted_bot() {
   [ "$REPO_PRIVATE" = true ] && [ -n "$pr_author_login" ] || return 1
   case "$pr_author_login" in
-    "$TOKEN_BOT" | "$CLAUDE_BOT" | "$DEPENDABOT_BOT" | "$GATE_BOT") return 0 ;;
+    "$TOKEN_BOT" | "$CLAUDE_BOT" | "$DEPENDABOT_BOT" | "$GATE_BOT" | "$RELEASER_BOT") return 0 ;;
   esac
   return 1
 }

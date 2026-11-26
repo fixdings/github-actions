@@ -481,11 +481,12 @@ test("the review workflow mints Claude's token without contents: write", () => {
 // A Dependabot PR's run has dependabot[bot] as actor and author; the action refuses a bot not in
 // `allowed_bots`, so without it every Dependabot PR's review fails before Claude starts. A PR a
 // workflow opened with GITHUB_TOKEN has github-actions[bot] the same way, and one the org's app
-// readied has fixdings[bot] as actor. The list stays explicit: `*` would admit any App that can
+// readied has fixdings[bot] as actor, and a release workflow's PR has fixdings-releaser[bot] as
+// author. The list stays explicit: `*` would admit any App that can
 // open a PR.
-test("the review admits Claude, Dependabot, GitHub Actions and the fixdings app, and no other bot", () => {
+test("the review admits Claude, Dependabot, GitHub Actions and the fixdings apps, and no other bot", () => {
   const bots = readWorkflow(".github/workflows/review.yml").match(/^ +allowed_bots: "([^"]*)"$/m)?.[1];
-  assert.deepEqual(bots?.split(",").sort(), ["claude[bot]", "dependabot[bot]", "fixdings[bot]", "github-actions[bot]"], `allowed_bots: ${bots}`);
+  assert.deepEqual(bots?.split(",").sort(), ["claude[bot]", "dependabot[bot]", "fixdings-releaser[bot]", "fixdings[bot]", "github-actions[bot]"], `allowed_bots: ${bots}`);
 });
 
 // The allowlist is a ceiling, and a tool the prompt asks for but cannot get is not an error:
@@ -1134,7 +1135,7 @@ const decideFn = () => `${shellFn(mergeScript(), "trusted_bot")}\n${shellFn(merg
 // A PR the gate merges: every fact as the reads report it for a clean, unmoved, insider PR.
 const CLEAN_FACTS = {
   CLAUDE_BOT: shellConst("CLAUDE_BOT", readWorkflow(`${ACTIONS_DIR}lib/run-comment.sh`)),
-  TOKEN_BOT: shellConst("TOKEN_BOT"), DEPENDABOT_BOT: shellConst("DEPENDABOT_BOT"), GATE_BOT: "fixdings[bot]",
+  TOKEN_BOT: shellConst("TOKEN_BOT"), DEPENDABOT_BOT: shellConst("DEPENDABOT_BOT"), RELEASER_BOT: shellConst("RELEASER_BOT"), GATE_BOT: "fixdings[bot]",
   failed: "", pr_state: "open", pr_draft: "false", pr_head: "abc", pr_base: "main", author: "MEMBER",
   wf_changed: "", nfiles: "1", pr_files: "1", hits: "", changes: "0", verdicts: "VERDICT: CLEAN",
   HEAD_SHA: "abc", DEFAULT_BRANCH: "main", RUN_CONCLUSION: "success", is_land: "", members: "",
@@ -1191,7 +1192,7 @@ test("the gate's decision over fixtures: order, staleness first, no label for a 
   assert.equal(run({ ...claudePr, REPO_PRIVATE: "false" }), "needs-human outsider", "a public repo keeps the stop");
   assert.equal(run({ ...claudePr, REPO_PRIVATE: "" }), "needs-human outsider", "an unknown visibility keeps the stop");
   assert.equal(run({ ...claudePr, pr_author_login: "someone" }), "needs-human outsider", "only a listed bot");
-  for (const login of ["github-actions[bot]", "claude[bot]", "dependabot[bot]", "fixdings[bot]"]) {
+  for (const login of ["github-actions[bot]", "claude[bot]", "dependabot[bot]", "fixdings[bot]", "fixdings-releaser[bot]"]) {
     const botPr = { author: "NONE", pr_author_login: login, pr_head_ref: "feature/x" };
     assert.equal(run({ ...botPr, REPO_PRIVATE: "true" }), "merge", `${login} is trusted in a private repo, from any branch`);
     for (const REPO_PRIVATE of ["false", ""]) {
@@ -1832,7 +1833,7 @@ test("the gate end to end against a fake gh (Req 2.8, 2.10, 2.12)", () => {
   // The other trusted bots merge in a private repo; their leftovers stay claude.yml's alone.
   const botPr = (login) => ({ ...withLeftovers, "repos/o/r/pulls/7": { ...base["repos/o/r/pulls/7"], author_association: "NONE",
     head: { sha: "abc", ref: "feature/x" }, user: { login } } });
-  for (const [login, gateBot] of [["dependabot[bot]", ""], ["github-actions[bot]", ""], ["fixdings[bot]", "fixdings[bot]"], ["claude[bot]", ""]]) {
+  for (const [login, gateBot] of [["dependabot[bot]", ""], ["github-actions[bot]", ""], ["fixdings[bot]", "fixdings[bot]"], ["fixdings-releaser[bot]", ""], ["claude[bot]", ""]]) {
     const r = gate({ over: botPr(login), repoPrivate: "true", headBranch: "feature/x", gateBot });
     assert.ok(r.merged && !r.labels, `${login}'s PR in a private repo merges:\n${r.log}`);
     assert.equal(r.issue, "", `${login}'s PR from feature/x files no leftovers`);
