@@ -129,12 +129,9 @@ test("a merge that changes nothing a caller runs releases nothing", () => {
 test("the release workflow tests, then tags main, moves the major under a lease and writes notes", () => {
   const src = repoFile(WORKFLOW);
   assert.match(src, /^on:\n {2}push:\n {4}branches: \[main\]\n/m, "releases only from main");
-  // The gate merges with GITHUB_TOKEN, which starts no push run: its finished run releases.
-  assert.match(src, /^ {2}workflow_run:\n {4}workflows: \[(.+)\]\n {4}types: \[completed\]\n/m, "a gate merge releases");
-  const gate = src.match(/^ {4}workflows: \[(.+)\]$/m)[1];
-  assert.equal(gate, repoFile(".github/workflows/claude-auto-merge.yml").match(/^name: (.+)$/m)[1], "named as the gate caller is");
+  // The gate merges with the app token, which starts a push run like a person's merge.
+  assert.doesNotMatch(src, /workflow_run/, "a gate merge releases through its push");
   assert.match(src, /^ {2}workflow_dispatch:$/m, "a release can be re-run by hand");
-  assert.doesNotMatch(src, /^ {4}if:/m, "no conclusion filter: a gate run can fail after its merge");
   assert.match(src, /^permissions:\n {2}contents: write\n\n/m, "tags and releases, nothing more");
   assert.match(src, /cancel-in-progress: false/, "a release run is never cancelled mid-push");
   assert.match(src, /fetch-depth: 0/, "the bump reads every message since the last tag");
